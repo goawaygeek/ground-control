@@ -190,7 +190,10 @@ const server = createServer(async (req, res) => {
     room.sessions.addSseClient(session, res)
     console.log(`[${room.game.gameId}] ${session.name} connected (${session.sseClients.size} connections)`)
 
-    req.on('close', () => {
+    let cleanedUp = false
+    const cleanup = () => {
+      if (cleanedUp) return
+      cleanedUp = true
       room.sessions.removeSseClient(session, res, (disconnectedSession) => {
         console.log(`[${room.game.gameId}] ${disconnectedSession.name} disconnected (grace period expired)`)
         const events = room.game.onPlayerLeave({
@@ -201,7 +204,14 @@ const server = createServer(async (req, res) => {
         room.dispatchEvents(events)
       })
       console.log(`[${room.game.gameId}] ${session.name} connection closed (${session.sseClients.size} remaining)`)
-    })
+    }
+
+    // Cover all the ways a client can go away: clean close, socket error,
+    // and our own res.end() (e.g. from /leave or a failed heartbeat write).
+    req.on('close', cleanup)
+    req.on('error', cleanup)
+    res.on('close', cleanup)
+    res.on('error', cleanup)
 
     return
   }
@@ -304,6 +314,18 @@ const server = createServer(async (req, res) => {
     return json(res, 200, { ok: true })
   }
 
+  // --- POST /<game>/ping (client liveness signal) ---
+  // Cloud Run holds half-open SSE connections after the client disappears,
+  // so the server can't reliably detect disconnects from socket state alone.
+  // Clients POST here every ~30s; sessions whose lastPingAt is too stale
+  // get reaped by the sweep below.
+  if (req.method === 'POST' && subpath === '/ping') {
+    const session = room.sessions.authenticate(req)
+    if (!session) return json(res, 401, { error: 'Unauthorized' })
+    room.sessions.markAlive(session.token)
+    return json(res, 200, { ok: true })
+  }
+
   // --- GET /<game>/state ---
   if (req.method === 'GET' && subpath === '/state') {
     const players = room.sessions.getActiveSessions().map(s => ({ name: s.name, role: s.role }))
@@ -325,7 +347,11 @@ const server = createServer(async (req, res) => {
     })}\n\n`)
 
     room.audienceClients.add(res)
-    req.on('close', () => room.audienceClients.delete(res))
+    const audienceCleanup = () => room.audienceClients.delete(res)
+    req.on('close', audienceCleanup)
+    req.on('error', audienceCleanup)
+    res.on('close', audienceCleanup)
+    res.on('error', audienceCleanup)
     return
   }
 
@@ -376,6 +402,32 @@ const server = createServer(async (req, res) => {
 setInterval(() => {
   for (const room of rooms.values()) {
     room.sendHeartbeat()
+  }
+}, 30_000)
+
+// Liveness sweep every 30 seconds — reap sessions whose client hasn't pinged
+// in PING_TIMEOUT_MS. Catches Cloud Run's half-open SSE connections.
+const PING_TIMEOUT_MS = 90_000
+setInterval(() => {
+  const now = Date.now()
+  for (const [gameId, room] of rooms) {
+    for (const session of room.sessions.getActiveSessions()) {
+      if (now - session.lastPingAt <= PING_TIMEOUT_MS) continue
+
+      const playerInfo = { name: session.name, token: session.token, role: session.role }
+
+      // Close any lingering SSE connections so they don't pile up
+      for (const sseRes of session.sseClients) {
+        try { sseRes.end() } catch { /* swallow */ }
+      }
+      session.sseClients.clear()
+
+      room.sessions.removePlayer(session.token)
+      const events = room.game.onPlayerLeave(playerInfo)
+      room.dispatchEvents(events)
+
+      console.log(`[${gameId}] ${session.name} reaped (no ping in ${Math.round((now - session.lastPingAt) / 1000)}s)`)
+    }
   }
 }, 30_000)
 

@@ -8,6 +8,8 @@ export interface PlayerSession {
   role: string
   sseClients: Set<ServerResponse>
   disconnectTimer: NodeJS.Timeout | null
+  /** Timestamp of last client liveness signal (SSE connect or /ping). */
+  lastPingAt: number
 }
 
 export type JoinResult = { ok: true; token: string; name: string; isReconnect: boolean } | { ok: false; error: string }
@@ -87,6 +89,7 @@ export class SessionManager {
       role: 'audience',
       sseClients: new Set(),
       disconnectTimer: null,
+      lastPingAt: Date.now(),
     }
     this.sessions.set(token, session)
     this.nameToToken.set(record.name, token)
@@ -101,6 +104,7 @@ export class SessionManager {
       role: 'audience',
       sseClients: new Set(),
       disconnectTimer: null,
+      lastPingAt: Date.now(),
     }
     this.sessions.set(token, session)
     this.nameToToken.set(name, token)
@@ -133,6 +137,15 @@ export class SessionManager {
       session.disconnectTimer = null
     }
     session.sseClients.add(res)
+    session.lastPingAt = Date.now()
+  }
+
+  /** Update the liveness timestamp on a session — called from POST /<game>/ping. */
+  markAlive(token: string): boolean {
+    const session = this.sessions.get(token)
+    if (!session) return false
+    session.lastPingAt = Date.now()
+    return true
   }
 
   removeSseClient(
@@ -183,3 +196,4 @@ export const addSseClient = defaultManager.addSseClient.bind(defaultManager)
 export const removeSseClient = defaultManager.removeSseClient.bind(defaultManager)
 export const removePlayer = defaultManager.removePlayer.bind(defaultManager)
 export const setRole = defaultManager.setRole.bind(defaultManager)
+export const markAlive = defaultManager.markAlive.bind(defaultManager)

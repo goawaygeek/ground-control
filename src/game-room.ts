@@ -14,12 +14,29 @@ export class GameRoom {
     this.sessions = new SessionManager(store)
   }
 
+  // Write to an SSE client, force-closing the connection on any failure so
+  // our cleanup handlers fire and the player gets removed from the room.
+  // Catches half-open connections Cloud Run held after the client went away.
+  private safeWrite(client: ServerResponse, payload: string): void {
+    try {
+      if (client.destroyed || client.writableEnded) {
+        client.end()
+        return
+      }
+      client.write(payload, (err) => {
+        if (err) client.end()
+      })
+    } catch {
+      try { client.end() } catch { /* swallow */ }
+    }
+  }
+
   broadcastToPlayer(token: string, event: { type: string; data: unknown }): void {
     const session = this.sessions.getSessionByToken(token)
     if (!session) return
     const payload = `event: ${event.type}\ndata: ${JSON.stringify(event.data)}\n\n`
     for (const res of session.sseClients) {
-      res.write(payload)
+      this.safeWrite(res, payload)
     }
   }
 
@@ -32,7 +49,7 @@ export class GameRoom {
   broadcastToAudience(event: { type: string; data: unknown }): void {
     const payload = `event: ${event.type}\ndata: ${JSON.stringify(event.data)}\n\n`
     for (const res of this.audienceClients) {
-      res.write(payload)
+      this.safeWrite(res, payload)
     }
   }
 
@@ -112,11 +129,11 @@ export class GameRoom {
     const payload = `event: heartbeat\ndata: ${JSON.stringify({ timestamp: new Date().toISOString() })}\n\n`
     for (const session of this.sessions.getActiveSessions()) {
       for (const client of session.sseClients) {
-        client.write(payload)
+        this.safeWrite(client, payload)
       }
     }
     for (const client of this.audienceClients) {
-      client.write(payload)
+      this.safeWrite(client, payload)
     }
   }
 }
