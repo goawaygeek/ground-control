@@ -80,10 +80,12 @@ describe('GameRoom', () => {
       room.broadcastToPlayer(result.token, { type: 'greeting', data: { msg: 'hi' } })
 
       expect(res.write).toHaveBeenCalledWith(
-        expect.stringContaining('event: greeting')
+        expect.stringContaining('event: greeting'),
+        expect.any(Function),
       )
       expect(res.write).toHaveBeenCalledWith(
-        expect.stringContaining('"msg":"hi"')
+        expect.stringContaining('"msg":"hi"'),
+        expect.any(Function),
       )
     })
   })
@@ -306,13 +308,16 @@ describe('GameRoom', () => {
       // All three should receive the message
       for (const res of [res1, res2, audienceRes]) {
         expect(res.write).toHaveBeenCalledWith(
-          expect.stringContaining('player:message')
+          expect.stringContaining('player:message'),
+          expect.any(Function),
         )
         expect(res.write).toHaveBeenCalledWith(
-          expect.stringContaining('Hello Bob!')
+          expect.stringContaining('Hello Bob!'),
+          expect.any(Function),
         )
         expect(res.write).toHaveBeenCalledWith(
-          expect.stringContaining('alice')
+          expect.stringContaining('alice'),
+          expect.any(Function),
         )
       }
     })

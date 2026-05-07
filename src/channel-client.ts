@@ -4,6 +4,10 @@ type FetchFn = typeof globalThis.fetch
 
 type Result = { ok: true; data?: Record<string, unknown> } | { ok: false; error: string }
 
+// How often the client should POST /<game>/ping. Server reaps sessions whose
+// lastPingAt is older than 90s, so 30s gives us 60s of slack for one missed ping.
+const PING_INTERVAL_MS = 30_000
+
 export class ChannelClient {
   private playerName: string | null = null
   private token: string | null = null
@@ -12,6 +16,7 @@ export class ChannelClient {
   private eventSource: EventSource | null = null
   private fetch: FetchFn
   private persistentToken: string | null = null
+  private pingTimer: ReturnType<typeof setInterval> | null = null
 
   constructor(
     private serverUrl: string,
@@ -70,6 +75,7 @@ export class ChannelClient {
       this.playerName = data.name ?? trimmed
       this.token = data.token!
       this.connectSSE()
+      this.startPinging()
       return { ok: true, data: { token: this.token, name: this.playerName } as any }
     } catch (err) {
       return { ok: false, error: `Failed to connect: ${err instanceof Error ? err.message : String(err)}` }
@@ -135,6 +141,36 @@ export class ChannelClient {
     }
 
     this.eventSource = es
+  }
+
+  /**
+   * Start posting /ping every PING_INTERVAL_MS so the server knows we're alive.
+   * Cloud Run holds half-open SSE connections after the client dies, so the
+   * server can't tell from socket state alone — this is the reliable signal.
+   * Failures are swallowed: a single missed ping is fine, the server has a
+   * 90s grace window before reaping.
+   */
+  private startPinging(): void {
+    if (this.pingTimer) return
+    this.pingTimer = setInterval(() => {
+      if (!this.token) return
+      this.fetch(`${this.serverUrl}/ping`, {
+        method: 'POST',
+        headers: { 'Authorization': `Bearer ${this.token}` },
+      }).catch(() => { /* transient network errors are fine */ })
+    }, PING_INTERVAL_MS)
+    // Don't keep the Node process alive just for the ping timer
+    if (typeof (this.pingTimer as any)?.unref === 'function') {
+      (this.pingTimer as any).unref()
+    }
+  }
+
+  /** Stop the ping loop — used by tests and on explicit disconnect. */
+  stopPinging(): void {
+    if (this.pingTimer) {
+      clearInterval(this.pingTimer)
+      this.pingTimer = null
+    }
   }
 
   private async postToServer(endpoint: string, body: unknown): Promise<Result> {

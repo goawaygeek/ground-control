@@ -108,7 +108,7 @@ const onboardingPreamble = persistentToken
     ].join('\n')
 
 const mcp = new Server(
-  { name: game.gameId, version: '0.3.0' },
+  { name: game.gameId, version: '0.4.0' },
   {
     capabilities: {
       experimental: { 'claude/channel': {} },
