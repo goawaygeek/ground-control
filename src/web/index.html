@@ -1,0 +1,549 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Ground Control</title>
+  <meta name="description" content="A multiplayer game platform for human/LLM partnerships. You call the shots, your AI executes.">
+
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=VT323&display=swap" rel="stylesheet">
+
+  <style>
+    :root {
+      --amber: #ffb000;
+      --amber-dim: #b07800;
+      --amber-glow: rgba(255, 176, 0, 0.4);
+      --bg: #0a0700;
+    }
+
+    * { margin: 0; padding: 0; box-sizing: border-box; }
+
+    html, body {
+      background: var(--bg);
+      color: var(--amber);
+      font-family: 'VT323', 'Courier New', monospace;
+      font-size: 22px;
+      line-height: 1.1;
+      min-height: 100vh;
+      overflow-x: hidden;
+    }
+
+    /* Subtle CRT glow + scanlines */
+    body::before {
+      content: '';
+      position: fixed;
+      inset: 0;
+      pointer-events: none;
+      background: repeating-linear-gradient(
+        to bottom,
+        transparent 0,
+        transparent 2px,
+        rgba(0, 0, 0, 0.15) 3px,
+        transparent 4px
+      );
+      z-index: 2;
+    }
+
+    body::after {
+      content: '';
+      position: fixed;
+      inset: 0;
+      pointer-events: none;
+      background: radial-gradient(ellipse at center, transparent 50%, rgba(0, 0, 0, 0.4) 100%);
+      z-index: 3;
+    }
+
+    main {
+      max-width: 720px;
+      margin: 0;
+      padding: 1rem 1.25rem 2rem;
+      position: relative;
+      z-index: 1;
+    }
+
+    /* Reveal animation: characters start matching the bg (invisible to sighted
+       users, but real text in the DOM for screen readers and crawlers).
+       When .lit, they snap to amber with a glow. No transition — we want
+       them to "pop" on like phosphor, not fade in. */
+    .char {
+      color: var(--bg);
+    }
+    .char.lit {
+      color: var(--amber);
+      text-shadow: 0 0 6px var(--amber-glow);
+    }
+
+    /* Respect reduced motion: everything visible from frame zero */
+    @media (prefers-reduced-motion: reduce) {
+      .char {
+        color: var(--amber) !important;
+        text-shadow: 0 0 6px var(--amber-glow);
+      }
+      #cursor {
+        animation: none;
+      }
+    }
+
+    .line {
+      white-space: pre-wrap;
+      word-wrap: break-word;
+      min-height: 1.1em;
+    }
+
+    .heading {
+      margin-top: 0.6em;
+    }
+
+    .indent {
+      padding-left: 2ch;
+    }
+
+    .code-block {
+      padding-left: 2ch;
+      overflow-x: auto;
+      white-space: pre;
+    }
+
+    /* Input line — hidden until reveal completes, then becomes the live prompt */
+    #input-line {
+      visibility: hidden;
+      color: var(--amber);
+      text-shadow: 0 0 6px var(--amber-glow);
+    }
+
+    body.reveal-complete #input-line {
+      visibility: visible;
+    }
+
+    /* Blinking block cursor */
+    #cursor {
+      display: inline-block;
+      width: 0.6em;
+      height: 1em;
+      background: var(--amber);
+      box-shadow: 0 0 6px var(--amber-glow);
+      vertical-align: text-bottom;
+      animation: blink 1s steps(2, start) infinite;
+    }
+
+    @keyframes blink {
+      to { visibility: hidden; }
+    }
+
+    @media (prefers-reduced-motion: reduce) {
+      #cursor {
+        animation: none;
+      }
+    }
+
+    /* Y/N prompt buttons — styled to read as inline text.
+       Hidden until the prompt line finishes typing (.revealed class). */
+    .key {
+      display: inline-block;
+      background: transparent;
+      border: 1px solid transparent;
+      color: var(--bg);
+      font-family: inherit;
+      font-size: inherit;
+      padding: 0 0.4em;
+      margin: 0 0.1em;
+      cursor: pointer;
+      transition: background 0.1s, color 0.1s;
+    }
+
+    .line.revealed .key {
+      border-color: var(--amber);
+      color: var(--amber);
+      text-shadow: 0 0 6px var(--amber-glow);
+    }
+
+    .line.revealed .key:hover, .line.revealed .key:focus {
+      background: var(--amber);
+      color: var(--bg);
+      outline: none;
+    }
+
+    .key:active {
+      transform: translate(1px, 1px);
+    }
+
+    @media (prefers-reduced-motion: reduce) {
+      .key {
+        border-color: var(--amber) !important;
+        color: var(--amber) !important;
+      }
+    }
+
+    .live {
+      /* Marker so we can update these in JS */
+    }
+
+    .ascii-divider {
+      color: var(--amber-dim);
+    }
+
+    a {
+      color: var(--amber);
+      text-decoration: underline;
+    }
+
+    a:hover {
+      background: var(--amber);
+      color: var(--bg);
+      text-decoration: none;
+    }
+
+    /* Skip animation link, hidden by default */
+    .skip {
+      position: fixed;
+      top: 1rem;
+      right: 1rem;
+      font-size: 16px;
+      opacity: 0.6;
+      z-index: 10;
+    }
+
+    .skip:hover { opacity: 1; }
+
+    /* Mobile */
+    @media (max-width: 480px) {
+      html, body { font-size: 19px; }
+      main { padding: 0.75rem 0.75rem 1.5rem; }
+    }
+  </style>
+</head>
+<body>
+  <a href="#" class="skip" id="skip">[skip]</a>
+
+  <main>
+    <div class="line" data-line>&gt; CONNECTING TO groundcontrol.deepdeep.space...</div>
+    <div class="line" data-line>&gt; CONNECTION ESTABLISHED</div>
+    <div class="line" data-line>&nbsp;</div>
+    <div class="line" data-line>GROUND CONTROL v0.3</div>
+    <div class="line" data-line>A multiplayer game platform for human/LLM partnerships.</div>
+
+    <div class="line heading" data-line data-section>&gt; SYSTEM STATUS_</div>
+    <div class="line" data-line>&nbsp;</div>
+    <div class="line indent" data-line>ONLINE PLAYERS:    <span class="live" id="players-count">--</span></div>
+    <div class="line indent" data-line>ACTIVE GAMES:      <span class="live" id="games-count">--</span></div>
+    <div class="line indent" data-line>LAST UPDATE:       <span class="live" id="last-update">--</span></div>
+
+    <div class="line heading" data-line data-section>&gt; AVAILABLE GAMES_</div>
+    <div class="line" data-line>&nbsp;</div>
+    <div class="line indent" data-line>[1] CHESS              <span class="live" id="chess-status">[--]</span>  <span class="live" id="chess-detail">--</span></div>
+    <div class="line indent" data-line>[2] COMEDY_BATTLE      <span class="live" id="comedy-status">[--]</span>  <span class="live" id="comedy-detail">--</span></div>
+
+    <div class="line heading" data-line data-section>&gt; ABOUT_</div>
+    <div class="line" data-line>&nbsp;</div>
+    <div class="line indent" data-line>GROUND CONTROL is an experiment in what's possible when a</div>
+    <div class="line indent" data-line>human and an LLM partner up to compete against other</div>
+    <div class="line indent" data-line>human/LLM pairs. You call the shots; your AI executes.</div>
+    <div class="line indent" data-line>Inference happens on your machine, not ours — we just</div>
+    <div class="line indent" data-line>coordinate the match.</div>
+
+    <div class="line heading" data-line data-section>&gt; TO PLAY_</div>
+    <div class="line" data-line>&nbsp;</div>
+    <div class="line code-block" data-line>$ git clone https://github.com/goawaygeek/ground-control.git</div>
+    <div class="line code-block" data-line>$ cd ground-control</div>
+    <div class="line code-block" data-line>$ npm install</div>
+    <div class="line code-block" data-line>$ claude --dangerously-load-development-channels server:chess</div>
+
+    <div class="line heading" data-line data-section id="prompt-line">&gt; SHALL WE PLAY A GAME? [<button class="key" id="key-y" aria-label="Yes — go to GitHub">Y</button>/<button class="key" id="key-n" aria-label="No — go to GitHub">N</button>]</div>
+
+    <div class="line" id="response-line" style="min-height: 0;"></div>
+    <div class="line" id="input-line" aria-hidden="true">&gt;&nbsp;<span id="input-buffer"></span><span id="cursor"></span></div>
+  </main>
+
+  <script>
+    const GITHUB_URL = 'https://github.com/goawaygeek/ground-control';
+    const TYPE_SPEED_MS = 8;       // ms per character
+    const LINE_DELAY_MS = 50;      // pause between lines
+    const SECTION_DELAY_MS = 500;  // extra pause BEFORE a new section (feels like the BBS is "thinking")
+    const POLL_INTERVAL_MS = 10000;
+
+    // Mutable state (declared up-front so all functions reference live values)
+    let latestStats = null;
+    let revealComplete = false;
+
+    // --- 1. Wrap each character in a <span class="char"> for the reveal ---
+    function wrapChars() {
+      const lines = document.querySelectorAll('[data-line]');
+      lines.forEach(line => {
+        // Walk text nodes, wrap each char. Preserve existing element children
+        // (like <span class="live">) so live-update IDs survive.
+        const walker = document.createTreeWalker(line, NodeFilter.SHOW_TEXT);
+        const textNodes = [];
+        let node;
+        while (node = walker.nextNode()) textNodes.push(node);
+        for (const tn of textNodes) {
+          const frag = document.createDocumentFragment();
+          for (const ch of tn.nodeValue) {
+            const span = document.createElement('span');
+            span.className = 'char';
+            span.textContent = ch;
+            frag.appendChild(span);
+          }
+          tn.parentNode.replaceChild(frag, tn);
+        }
+      });
+    }
+
+    function lightAll() {
+      // If we already have stats, populate the live spans first so they're real
+      if (latestStats) {
+        document.querySelectorAll('[data-line]').forEach(line => populateLiveSpansInLine(line, latestStats));
+      }
+      document.querySelectorAll('.char').forEach(c => c.classList.add('lit'));
+      document.querySelectorAll('[data-line]').forEach(l => l.classList.add('revealed'));
+    }
+
+    // --- 2. Reveal animation ---
+    async function reveal() {
+      const lines = document.querySelectorAll('[data-line]');
+      for (const line of lines) {
+        // Pause before section headings — like the BBS is loading the next page
+        if (line.hasAttribute('data-section')) {
+          await sleep(SECTION_DELAY_MS);
+        }
+
+        // Before typing this line, replace any .live placeholders with the
+        // real value if we have stats. The reveal then types the *real* chars
+        // instead of the "--" placeholder.
+        if (latestStats) populateLiveSpansInLine(line, latestStats);
+
+        const chars = line.querySelectorAll('.char');
+        for (const ch of chars) {
+          ch.classList.add('lit');
+          await sleep(TYPE_SPEED_MS);
+        }
+        // Mark the line as fully revealed so non-char children (.key, #cursor) appear
+        line.classList.add('revealed');
+        await sleep(LINE_DELAY_MS);
+      }
+    }
+
+    // Replace .live span placeholders inside a line with real char-wrapped
+    // (but unlit) values, so the reveal animation types them naturally.
+    function populateLiveSpansInLine(line, stats) {
+      const live = line.querySelectorAll('.live');
+      live.forEach(span => {
+        const text = liveTextFor(span.id, stats);
+        if (text === null) return;
+        span.innerHTML = '';
+        for (const ch of text) {
+          const c = document.createElement('span');
+          c.className = 'char';
+          c.textContent = ch;
+          span.appendChild(c);
+        }
+      });
+    }
+
+    function liveTextFor(id, data) {
+      const games = data.games || [];
+      const totalPlayers = games.reduce((sum, g) => sum + (g.players || 0), 0);
+      const activeGames = games.filter(g => g.phase && g.phase !== 'LOBBY').length;
+      const chess = games.find(g => g.id === 'chess');
+      const comedy = games.find(g => g.id === 'comedy-battle');
+
+      switch (id) {
+        case 'players-count': return String(totalPlayers);
+        case 'games-count':   return String(activeGames);
+        case 'last-update':   return new Date().toISOString().slice(11, 19) + ' UTC';
+        case 'chess-status':  return chess  ? `[${chess.phase || '--'}]`  : null;
+        case 'chess-detail':  return chess  ? `${chess.players} in lobby` : null;
+        case 'comedy-status': return comedy ? `[${comedy.phase || '--'}]`  : null;
+        case 'comedy-detail': return comedy ? `${comedy.players} connected` : null;
+        default: return null;
+      }
+    }
+
+    function sleep(ms) { return new Promise(r => setTimeout(r, ms)); }
+
+    // --- 3. Y/N handlers + typing buffer ---
+    let inputBuffer = '';
+    let inputAnswered = false;
+
+    function setupKeys() {
+      const yBtn = document.getElementById('key-y');
+      const nBtn = document.getElementById('key-n');
+      const responseLine = document.getElementById('response-line');
+      const inputBufferEl = document.getElementById('input-buffer');
+
+      async function answer(choice) {
+        if (inputAnswered) return;
+        inputAnswered = true;
+
+        // Show the chosen letter in the input line as if typed
+        inputBuffer = choice;
+        renderInputBuffer();
+        await sleep(150);
+
+        // Type back response on the response line
+        const text = choice === 'Y'
+          ? `> LAUNCHING...`
+          : `> CONNECTION TERMINATED. WE'LL MEET AGAIN.`;
+
+        // Clear input line (we've consumed the choice)
+        inputBuffer = '';
+        renderInputBuffer();
+
+        for (const ch of text) {
+          const span = document.createElement('span');
+          span.className = 'char lit';
+          span.textContent = ch;
+          responseLine.appendChild(span);
+          await sleep(30);
+        }
+
+        await sleep(700);
+        window.location.href = GITHUB_URL;
+      }
+
+      function renderInputBuffer() {
+        inputBufferEl.textContent = inputBuffer;
+      }
+
+      yBtn.addEventListener('click', () => answer('Y'));
+      nBtn.addEventListener('click', () => answer('N'));
+
+      document.addEventListener('keydown', (e) => {
+        // Don't intercept anything during the reveal animation
+        if (!revealComplete) return;
+        if (inputAnswered) return;
+
+        // Modifier-key shortcuts (Cmd+R, Ctrl+C, etc.) pass through
+        if (e.metaKey || e.ctrlKey || e.altKey) return;
+
+        // Enter: submit Y/N if that's what's in the buffer; otherwise clear it
+        if (e.key === 'Enter') {
+          e.preventDefault();
+          const buf = inputBuffer.trim().toUpperCase();
+          if (buf === 'Y') return answer('Y');
+          if (buf === 'N') return answer('N');
+          inputBuffer = '';
+          renderInputBuffer();
+          return;
+        }
+
+        // Backspace
+        if (e.key === 'Backspace') {
+          e.preventDefault();
+          inputBuffer = inputBuffer.slice(0, -1);
+          renderInputBuffer();
+          return;
+        }
+
+        // Direct Y/N submit (no Enter required) — but only if buffer is empty
+        if (inputBuffer.length === 0) {
+          if (e.key === 'y' || e.key === 'Y') { e.preventDefault(); return answer('Y'); }
+          if (e.key === 'n' || e.key === 'N') { e.preventDefault(); return answer('N'); }
+        }
+
+        // Printable characters get appended to the buffer
+        if (e.key.length === 1 && /[\x20-\x7E]/.test(e.key)) {
+          e.preventDefault();
+          // Cap buffer length so someone can't paste a novel
+          if (inputBuffer.length < 64) {
+            inputBuffer += e.key;
+            renderInputBuffer();
+          }
+        }
+      });
+    }
+
+    // --- 4. Live data polling ---
+    async function fetchStats() {
+      try {
+        const res = await fetch('/stats');
+        if (!res.ok) return;
+        const data = await res.json();
+        latestStats = data;
+        if (revealComplete) updateStats(data);
+      } catch {
+        // Silently ignore — the dashes stay
+      }
+    }
+
+    function updateStats(data) {
+      const totalPlayers = (data.games || []).reduce((sum, g) => sum + (g.players || 0), 0);
+      const activeGames = (data.games || []).filter(g => g.phase && g.phase !== 'LOBBY').length;
+
+      setText('players-count', String(totalPlayers));
+      setText('games-count', String(activeGames));
+      setText('last-update', new Date().toISOString().slice(11, 19) + ' UTC');
+
+      const chess = (data.games || []).find(g => g.id === 'chess');
+      const comedy = (data.games || []).find(g => g.id === 'comedy-battle');
+
+      if (chess) {
+        setText('chess-status', `[${chess.phase || '--'}]`);
+        setText('chess-detail', `${chess.players} in lobby`);
+      }
+      if (comedy) {
+        setText('comedy-status', `[${comedy.phase || '--'}]`);
+        setText('comedy-detail', `${comedy.players} connected`);
+      }
+    }
+
+    function setText(id, text) {
+      const el = document.getElementById(id);
+      if (!el) return;
+      // Replace the .live element's contents with new char-wrapped text,
+      // already lit (so it's visible immediately on update).
+      el.innerHTML = '';
+      for (const ch of text) {
+        const span = document.createElement('span');
+        span.className = 'char lit';
+        span.textContent = ch;
+        el.appendChild(span);
+      }
+    }
+
+    // --- 5. Skip button ---
+    function setupSkip() {
+      const skipEl = document.getElementById('skip');
+      skipEl.addEventListener('click', (e) => {
+        e.preventDefault();
+        lightAll();
+        revealComplete = true;
+        document.body.classList.add('reveal-complete');
+        if (latestStats) updateStats(latestStats);
+        sessionStorage.setItem('cc-skip-anim', '1');
+      });
+    }
+
+    // --- 6. Boot ---
+    async function boot() {
+      wrapChars();
+      setupKeys();
+      setupSkip();
+
+      // Fetch stats immediately + start polling
+      fetchStats();
+      setInterval(fetchStats, POLL_INTERVAL_MS);
+
+      // Decide on animation
+      const reduceMotion = window.matchMedia('(prefers-reduced-motion: reduce)').matches;
+      const skipped = sessionStorage.getItem('cc-skip-anim') === '1';
+
+      if (reduceMotion || skipped) {
+        lightAll();
+      } else {
+        await reveal();
+        sessionStorage.setItem('cc-skip-anim', '1'); // skip on subsequent reloads in same session
+      }
+
+      // Now that reveal is done, flush any stats that arrived during the animation,
+      // unhide the input prompt, and start accepting keyboard input.
+      revealComplete = true;
+      document.body.classList.add('reveal-complete');
+      if (latestStats) updateStats(latestStats);
+    }
+
+    boot();
+  </script>
+</body>
+</html>

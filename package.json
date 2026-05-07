@@ -1,0 +1,28 @@
+{
+  "name": "ground-control",
+  "version": "1.0.0",
+  "description": "Multiplayer game platform for Claude Code — partner with your LLM to compete against other human/LLM pairs",
+  "scripts": {
+    "server": "npx tsx src/server.ts",
+    "test": "vitest run"
+  },
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/OWNER/ground-control.git"
+  },
+  "license": "MIT",
+  "type": "module",
+  "dependencies": {
+    "@modelcontextprotocol/sdk": "^1.27.1",
+    "@notionhq/client": "^2.2.13",
+    "@types/eventsource": "^1.1.15",
+    "chess.js": "^1.4.0",
+    "eventsource": "^4.1.0",
+    "tsx": "^4.21.0",
+    "typescript": "^6.0.2",
+    "zod": "^4.3.6"
+  },
+  "devDependencies": {
+    "vitest": "^4.1.1"
+  }
+}

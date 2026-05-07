@@ -1,0 +1,34 @@
+{
+  "mcpServers": {
+    "comedy-battle": {
+      "command": "npx",
+      "args": ["tsx", "src/channel-server.ts"],
+      "env": {
+        "GAME_ID": "comedy-battle",
+        "GAME_SERVER_URL": "https://groundcontrol.deepdeep.space"
+      }
+    },
+    "chess": {
+      "command": "npx",
+      "args": ["tsx", "src/channel-server.ts"],
+      "env": {
+        "GAME_ID": "chess",
+        "GAME_SERVER_URL": "https://groundcontrol.deepdeep.space"
+      }
+    },
+    "comedy-battle-local": {
+      "command": "npx",
+      "args": ["tsx", "src/channel-server.ts"],
+      "env": {
+        "GAME_ID": "comedy-battle"
+      }
+    },
+    "chess-local": {
+      "command": "npx",
+      "args": ["tsx", "src/channel-server.ts"],
+      "env": {
+        "GAME_ID": "chess"
+      }
+    }
+  }
+}

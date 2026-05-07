@@ -1,0 +1,400 @@
+import { createServer, IncomingMessage, ServerResponse } from 'node:http'
+import { readFileSync } from 'node:fs'
+import { join, dirname } from 'node:path'
+import { fileURLToPath } from 'node:url'
+
+import { createGame, getAvailableGames } from './game/index.js'
+import { GameRoom } from './game-room.js'
+import { NotionPlayerStore, LocalJsonStore } from './store.js'
+
+const __dirname = dirname(fileURLToPath(import.meta.url))
+const PORT = parseInt(process.env.PORT ?? '8087', 10)
+
+// --- Shared player store (persistent identity across all games) ---
+let playerStore
+if (process.env.NOTION_TOKEN && process.env.NOTION_DATABASE_ID) {
+  playerStore = new NotionPlayerStore(process.env.NOTION_DATABASE_ID, process.env.NOTION_TOKEN)
+  console.log('Using Notion for player persistence')
+} else {
+  const storePath = join(__dirname, '..', 'data', 'players.json')
+  playerStore = new LocalJsonStore(storePath)
+  console.log('Using local JSON file for player persistence')
+}
+
+// --- Create a GameRoom for each available game ---
+const rooms = new Map<string, GameRoom>()
+for (const gameId of getAvailableGames()) {
+  rooms.set(gameId, new GameRoom(createGame(gameId), playerStore))
+}
+
+function resolveRoom(pathname: string): { room: GameRoom; subpath: string } | null {
+  // Match /<gameId>/... pattern
+  const match = pathname.match(/^\/([^/]+)(.*)$/)
+  if (!match) return null
+
+  const [, gameId, rest] = match
+  const room = rooms.get(gameId)
+  if (!room) return null
+
+  return { room, subpath: rest || '/' }
+}
+
+// --- HTTP Helpers ---
+const MAX_BODY_BYTES = 64 * 1024 // 64 KB — generous ceiling for game payloads
+
+type ReadBodyResult = { ok: true; body: string } | { ok: false; tooLarge: true }
+
+function readBody(req: IncomingMessage): Promise<ReadBodyResult> {
+  return new Promise((resolve, reject) => {
+    let body = ''
+    let size = 0
+    let aborted = false
+    req.on('data', (chunk: Buffer) => {
+      if (aborted) return
+      size += chunk.length
+      if (size > MAX_BODY_BYTES) {
+        aborted = true
+        req.destroy()
+        resolve({ ok: false, tooLarge: true })
+        return
+      }
+      body += chunk.toString()
+    })
+    req.on('end', () => {
+      if (!aborted) resolve({ ok: true, body })
+    })
+    req.on('error', (err) => {
+      if (!aborted) reject(err)
+    })
+  })
+}
+
+function json(res: ServerResponse, status: number, data: unknown) {
+  res.writeHead(status, { 'Content-Type': 'application/json', 'Access-Control-Allow-Origin': '*' })
+  res.end(JSON.stringify(data))
+}
+
+// --- Server ---
+const server = createServer(async (req, res) => {
+  const url = new URL(req.url!, `http://localhost:${PORT}`)
+
+  // CORS preflight
+  if (req.method === 'OPTIONS') {
+    res.writeHead(204, {
+      'Access-Control-Allow-Origin': '*',
+      'Access-Control-Allow-Methods': 'GET, POST, OPTIONS',
+      'Access-Control-Allow-Headers': 'Content-Type, Authorization',
+    })
+    res.end()
+    return
+  }
+
+  // --- GET /health ---
+  if (req.method === 'GET' && url.pathname === '/health') {
+    return json(res, 200, { ok: true })
+  }
+
+  // --- GET / (landing page) ---
+  if (req.method === 'GET' && url.pathname === '/') {
+    try {
+      const html = readFileSync(join(__dirname, 'web', 'index.html'), 'utf-8')
+      res.writeHead(200, { 'Content-Type': 'text/html; charset=utf-8' })
+      res.end(html)
+    } catch {
+      res.writeHead(500, { 'Content-Type': 'text/plain' })
+      res.end('Landing page not found.')
+    }
+    return
+  }
+
+  // --- GET /stats (aggregated live counters for the landing page) ---
+  if (req.method === 'GET' && url.pathname === '/stats') {
+    const games = getAvailableGames().map(id => ({
+      id,
+      phase: rooms.get(id)!.game.getPhase(),
+      players: rooms.get(id)!.sessions.getActiveSessions().length,
+    }))
+    return json(res, 200, { games })
+  }
+
+  // --- Resolve game room from path prefix ---
+  const resolved = resolveRoom(url.pathname)
+  if (!resolved) {
+    return json(res, 404, { error: 'Not found. Available games: ' + getAvailableGames().join(', ') })
+  }
+
+  const { room, subpath } = resolved
+
+  // --- POST /<game>/join ---
+  if (req.method === 'POST' && subpath === '/join') {
+    const bodyResult = await readBody(req)
+    if (!bodyResult.ok) return json(res, 413, { error: 'Request body too large' })
+    let parsed: { name?: string; token?: string }
+    try {
+      parsed = JSON.parse(bodyResult.body)
+    } catch {
+      return json(res, 400, { error: 'Invalid JSON' })
+    }
+
+    const { name, token } = parsed
+
+    let result
+    if (token && typeof token === 'string') {
+      // Token-based reconnect
+      result = await room.sessions.joinPlayerByToken(token)
+    } else if (name && typeof name === 'string' && name.trim().length > 0) {
+      // Name-based join
+      result = await room.sessions.joinPlayer(name.trim())
+    } else {
+      return json(res, 400, { error: 'Provide "name" to register or "token" to reconnect' })
+    }
+
+    if (!result.ok) {
+      return json(res, result.error.includes('Invalid token') ? 401 : 409, { error: result.error })
+    }
+
+    console.log(`[${room.game.gameId}] ${result.name} joined${result.isReconnect ? ' (reconnect)' : ''} — token: ${result.token.slice(0, 8)}...`)
+
+    const session = room.sessions.getSessionByToken(result.token)!
+    const events = room.game.onPlayerJoin({ name: session.name, token: session.token, role: session.role })
+    room.dispatchEvents(events)
+
+    return json(res, 200, { token: result.token, name: result.name })
+  }
+
+  // --- GET /<game>/events?token=<token> (Player SSE) ---
+  if (req.method === 'GET' && subpath === '/events') {
+    const token = url.searchParams.get('token')
+    if (!token) {
+      return json(res, 400, { error: 'Missing ?token= parameter' })
+    }
+
+    const session = room.sessions.getSessionByToken(token)
+    if (!session) {
+      return json(res, 401, { error: 'Invalid token' })
+    }
+
+    res.writeHead(200, {
+      'Content-Type': 'text/event-stream',
+      'Cache-Control': 'no-cache',
+      'Connection': 'keep-alive',
+      'Access-Control-Allow-Origin': '*',
+    })
+
+    res.write(`event: connected\ndata: ${JSON.stringify({
+      name: session.name,
+      role: session.role,
+      gameState: room.game.getState(),
+    })}\n\n`)
+
+    room.sessions.addSseClient(session, res)
+    console.log(`[${room.game.gameId}] ${session.name} connected (${session.sseClients.size} connections)`)
+
+    req.on('close', () => {
+      room.sessions.removeSseClient(session, res, (disconnectedSession) => {
+        console.log(`[${room.game.gameId}] ${disconnectedSession.name} disconnected (grace period expired)`)
+        const events = room.game.onPlayerLeave({
+          name: disconnectedSession.name,
+          token: disconnectedSession.token,
+          role: disconnectedSession.role,
+        })
+        room.dispatchEvents(events)
+      })
+      console.log(`[${room.game.gameId}] ${session.name} connection closed (${session.sseClients.size} remaining)`)
+    })
+
+    return
+  }
+
+  // --- POST /<game>/start-round ---
+  if (req.method === 'POST' && subpath === '/start-round') {
+    const session = room.sessions.authenticate(req)
+    if (!session) return json(res, 401, { error: 'Unauthorized' })
+
+    const players = room.sessions.getActiveSessions().map(s => ({
+      name: s.name,
+      token: s.token,
+      role: s.role,
+    }))
+
+    if (!room.game.canStartGame(players)) {
+      return json(res, 400, { error: `Cannot start game (phase: ${room.game.getPhase()}, players: ${players.length})` })
+    }
+
+    const events = room.game.startRound(players)
+    const roles = room.game.getRoleAssignments(players)
+    for (const [token, role] of roles) {
+      room.sessions.setRole(token, role)
+    }
+
+    room.dispatchEvents(events)
+    const state = room.game.getState()
+    console.log(`[${room.game.gameId}] Started round ${state.roundNumber}: "${state.theme}"`)
+
+    return json(res, 200, { ok: true, ...state })
+  }
+
+  // --- POST /<game>/action ---
+  if (req.method === 'POST' && subpath === '/action') {
+    const session = room.sessions.authenticate(req)
+    if (!session) return json(res, 401, { error: 'Unauthorized' })
+
+    const bodyResult = await readBody(req)
+    if (!bodyResult.ok) return json(res, 413, { error: 'Request body too large' })
+    let parsed: Record<string, unknown>
+    try {
+      parsed = JSON.parse(bodyResult.body)
+    } catch {
+      return json(res, 400, { error: 'Invalid JSON' })
+    }
+
+    const { action, ...data } = parsed
+    if (!action || typeof action !== 'string') {
+      return json(res, 400, { error: 'Missing "action" field' })
+    }
+
+    // Game-agnostic actions handled at the room level
+    if (action === 'send_message') {
+      const message = data.message
+      if (!message || typeof message !== 'string' || message.trim().length === 0) {
+        return json(res, 400, { error: 'Missing or empty "message" field' })
+      }
+      room.handleMessage(
+        { name: session.name, token: session.token, role: session.role },
+        message.trim(),
+      )
+      console.log(`[${room.game.gameId}] ${session.name}: message`)
+      return json(res, 200, { ok: true })
+    }
+
+    const result = room.game.onAction(
+      { name: session.name, token: session.token, role: session.role },
+      action,
+      data,
+    )
+
+    if (!result.ok) {
+      return json(res, 400, { error: result.error })
+    }
+
+    room.dispatchEvents(result.events)
+    console.log(`[${room.game.gameId}] ${session.name}: ${action}`)
+
+    return json(res, 200, { ok: true })
+  }
+
+  // --- POST /<game>/leave ---
+  if (req.method === 'POST' && subpath === '/leave') {
+    const session = room.sessions.authenticate(req)
+    if (!session) return json(res, 401, { error: 'Unauthorized' })
+
+    const playerInfo = { name: session.name, token: session.token, role: session.role }
+
+    // Close all active SSE connections for this player
+    for (const sseRes of session.sseClients) {
+      sseRes.end()
+    }
+    session.sseClients.clear()
+
+    room.sessions.removePlayer(session.token)
+    const events = room.game.onPlayerLeave(playerInfo)
+    room.dispatchEvents(events)
+
+    console.log(`[${room.game.gameId}] ${session.name} left`)
+    return json(res, 200, { ok: true })
+  }
+
+  // --- GET /<game>/state ---
+  if (req.method === 'GET' && subpath === '/state') {
+    const players = room.sessions.getActiveSessions().map(s => ({ name: s.name, role: s.role }))
+    return json(res, 200, { ...room.game.getState(), players })
+  }
+
+  // --- GET /<game>/audience (Web UI SSE) ---
+  if (req.method === 'GET' && subpath === '/audience') {
+    res.writeHead(200, {
+      'Content-Type': 'text/event-stream',
+      'Cache-Control': 'no-cache',
+      'Connection': 'keep-alive',
+      'Access-Control-Allow-Origin': '*',
+    })
+    res.write(`event: connected\ndata: ${JSON.stringify({
+      message: 'Connected to audience feed',
+      gameState: room.game.getState(),
+      players: room.sessions.getActiveSessions().map(s => ({ name: s.name, role: s.role })),
+    })}\n\n`)
+
+    room.audienceClients.add(res)
+    req.on('close', () => room.audienceClients.delete(res))
+    return
+  }
+
+  // --- GET /<game>/ — per-game spectator UI (deferred). Redirect to landing. ---
+  if (req.method === 'GET' && (subpath === '/' || subpath === '/index.html')) {
+    res.writeHead(302, { Location: '/' })
+    res.end()
+    return
+  }
+
+  // --- POST /<game>/config ---
+  if (req.method === 'POST' && subpath === '/config') {
+    const bodyResult = await readBody(req)
+    if (!bodyResult.ok) return json(res, 413, { error: 'Request body too large' })
+    let parsed: Record<string, unknown>
+    try {
+      parsed = JSON.parse(bodyResult.body)
+    } catch {
+      return json(res, 400, { error: 'Invalid JSON' })
+    }
+
+    room.game.setConfig(parsed)
+    const updated = room.game.getConfig()
+    console.log(`[${room.game.gameId}] Config updated:`, updated)
+    return json(res, 200, { ok: true, config: updated })
+  }
+
+  // --- GET /<game>/config ---
+  if (req.method === 'GET' && subpath === '/config') {
+    return json(res, 200, { config: room.game.getConfig() })
+  }
+
+  // --- GET /<game>/status ---
+  if (req.method === 'GET' && subpath === '/status') {
+    const sessions = room.sessions.getActiveSessions()
+    return json(res, 200, {
+      players: sessions.map(s => ({ name: s.name, role: s.role, connections: s.sseClients.size })),
+      totalPlayers: sessions.length,
+      gamePhase: room.game.getPhase(),
+    })
+  }
+
+  // 404 within game namespace
+  json(res, 404, { error: 'Not found' })
+})
+
+// Heartbeat every 30 seconds
+setInterval(() => {
+  for (const room of rooms.values()) {
+    room.sendHeartbeat()
+  }
+}, 30_000)
+
+server.listen(PORT, () => {
+  console.log(`Game server running on http://localhost:${PORT}`)
+  console.log(`  Games:`)
+  for (const gameId of getAvailableGames()) {
+    console.log(`    /${gameId}/  — ${gameId}`)
+  }
+  console.log(`  Health:      GET  /health`)
+  console.log(`  Game list:   GET  /`)
+  console.log()
+  console.log(`  Per-game routes (prefix with /<gameId>):`)
+  console.log(`    Join:        POST /join`)
+  console.log(`    SSE:         GET  /events?token=<token>`)
+  console.log(`    Audience:    GET  /audience`)
+  console.log(`    Start round: POST /start-round  (auth required)`)
+  console.log(`    Action:      POST /action        (auth required)`)
+  console.log(`    State:       GET  /state`)
+  console.log(`    Config:      GET  /config`)
+  console.log(`    Status:      GET  /status`)
+})
