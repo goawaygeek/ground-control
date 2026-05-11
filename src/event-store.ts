@@ -120,10 +120,10 @@ export class NotionEventStore implements EventStore {
                 date: { start: record.timestamp },
               },
               type: {
-                select: { name: record.type },
+                rich_text: [{ text: { content: record.type } }],
               },
               game: {
-                select: { name: record.game },
+                rich_text: [{ text: { content: record.game } }],
               },
               data: {
                 rich_text: [{ text: { content: JSON.stringify(record.data).slice(0, 1900) } }],
@@ -159,8 +159,8 @@ export class NotionEventStore implements EventStore {
     return {
       id: props.id?.title?.[0]?.text?.content ?? '',
       timestamp: props.timestamp?.date?.start ?? '',
-      type: (props.type?.select?.name ?? 'player:join') as AnalyticsEventType,
-      game: props.game?.select?.name ?? '',
+      type: (props.type?.rich_text?.[0]?.text?.content ?? 'player:join') as AnalyticsEventType,
+      game: props.game?.rich_text?.[0]?.text?.content ?? '',
       data: (() => {
         const raw = props.data?.rich_text?.[0]?.text?.content
         if (!raw) return {}
