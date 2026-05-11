@@ -52,10 +52,21 @@ describe('ChessGame', () => {
     it('onPlayerLeave removes from lobby', () => {
       const alice = makePlayer('alice')
       game.onPlayerJoin(alice)
-      game.onPlayerLeave(alice)
+      game.onPlayerLeave(alice, 'graceful')
 
       const state = game.getState() as any
       expect(state.lobbyPlayers).not.toContain('alice')
+    })
+
+    it('onPlayerLeave includes the reason in the player:left event', () => {
+      const alice = makePlayer('alice')
+      game.onPlayerJoin(alice)
+      const events = game.onPlayerLeave(alice, 'reaped')
+
+      const left = events.find(e => e.type === 'player:left')
+      expect(left).toBeDefined()
+      expect((left!.data as any).reason).toBe('reaped')
+      expect((left!.data as any).name).toBe('alice')
     })
 
     it('onPlayerLeave cleans up pending challenges involving that player', () => {
@@ -68,7 +79,7 @@ describe('ChessGame', () => {
       game.onAction(alice, 'challenge', { opponent: 'bob' })
 
       // Alice leaves — challenge should be cancelled
-      game.onPlayerLeave(alice)
+      game.onPlayerLeave(alice, 'disconnect')
       const state = game.getState() as any
       expect(state.pendingChallenges).toHaveLength(0)
     })
@@ -343,7 +354,7 @@ describe('ChessGame', () => {
       const challengeId = (challengeResult.events.find(e => e.type === 'challenge:sent')?.data as any).challengeId
       game.onAction(bob, 'accept_challenge', { challengeId })
 
-      const events = game.onPlayerLeave(alice)
+      const events = game.onPlayerLeave(alice, 'disconnect')
       expect(events.some(e => e.type === 'game:over')).toBe(true)
       const gameOver = events.find(e => e.type === 'game:over')!
       expect((gameOver.data as any).reason).toBe('forfeit')

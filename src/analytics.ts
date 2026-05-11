@@ -25,7 +25,17 @@ export class Analytics {
         this.handleGameStart(event.roomId, event.data as Record<string, unknown>)
       } else if (event.type === 'game:over') {
         this.handleGameOver(event.roomId, event.data as Record<string, unknown>)
+      } else if (event.type === 'player:left') {
+        this.handlePlayerLeft(event.roomId, event.data as Record<string, unknown>)
       }
+    })
+  }
+
+  private handlePlayerLeft(roomId: string, data: Record<string, unknown>): void {
+    this.safeLog({
+      type: 'player:left',
+      game: roomId,
+      data: { name: data.name, reason: data.reason },
     })
   }
 

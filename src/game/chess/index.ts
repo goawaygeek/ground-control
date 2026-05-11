@@ -1,6 +1,6 @@
 import { Chess } from 'chess.js'
 import { randomUUID } from 'node:crypto'
-import type { GameModule, GameEvent, PlayerInfo, ActionResult, McpToolDef } from '../types.js'
+import type { GameModule, GameEvent, PlayerInfo, ActionResult, McpToolDef, LeaveReason } from '../types.js'
 
 const DEFAULT_TURN_TIME_LIMIT = 120_000 // 2 minutes per move
 
@@ -66,9 +66,9 @@ export class ChessGame implements GameModule {
     ]
   }
 
-  onPlayerLeave(player: PlayerInfo): GameEvent[] {
+  onPlayerLeave(player: PlayerInfo, reason: LeaveReason): GameEvent[] {
     const events: GameEvent[] = [
-      { type: 'player:left', data: { name: player.name } },
+      { type: 'player:left', data: { name: player.name, reason } },
     ]
 
     const state = this.playerStates.get(player.token)

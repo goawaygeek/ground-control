@@ -1,4 +1,4 @@
-import type { GameModule, GameEvent, PlayerInfo, ActionResult, McpToolDef } from '../types.js'
+import type { GameModule, GameEvent, PlayerInfo, ActionResult, McpToolDef, LeaveReason } from '../types.js'
 
 type Phase = 'LOBBY' | 'WRITING' | 'REVEAL' | 'VOTING' | 'RESULTS'
 
@@ -86,10 +86,10 @@ export class ComedyBattle implements GameModule {
     }]
   }
 
-  onPlayerLeave(player: PlayerInfo): GameEvent[] {
+  onPlayerLeave(player: PlayerInfo, reason: LeaveReason): GameEvent[] {
     const events: GameEvent[] = [{
       type: 'player:left',
-      data: { name: player.name },
+      data: { name: player.name, reason },
     }]
 
     // If a competitor leaves during WRITING, the other wins by default

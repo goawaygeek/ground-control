@@ -120,15 +120,68 @@ describe('Analytics', () => {
     expect(over.data.durationMs as number).toBeGreaterThan(0)
   })
 
-  it('does not record event types other than the analytics set', async () => {
+  it('does not record incidental event types like lobby:update or player:joined-from-game', async () => {
     const room = new GameRoom(new ChessGame())
     analytics.subscribe(room)
 
     const alice = await room.sessions.joinPlayer('alice')
     if (!alice.ok) throw new Error('join failed')
-    // player:joined and lobby:update fire here — but we only record game:* / player:join.
+    // player:joined and lobby:update fire here, but we don't double-record:
+    // platform-level player joins go through recordJoin(), not the subscriber.
     room.dispatchEvents(room.game.onPlayerJoin({ name: 'alice', token: alice.token, role: 'audience' }))
 
     expect(store.records.length).toBe(0)
+  })
+
+  describe('player:left handling', () => {
+    it('records a player:left event with the reason passed by the game module', async () => {
+      const room = new GameRoom(new ChessGame())
+      analytics.subscribe(room)
+
+      const alice = await room.sessions.joinPlayer('alice')
+      if (!alice.ok) throw new Error('join failed')
+      room.dispatchEvents(room.game.onPlayerJoin({ name: 'alice', token: alice.token, role: 'audience' }))
+
+      room.dispatchEvents(room.game.onPlayerLeave(
+        { name: 'alice', token: alice.token, role: 'audience' },
+        'disconnect',
+      ))
+
+      const leaves = store.records.filter(r => r.type === 'player:left')
+      expect(leaves).toHaveLength(1)
+      expect(leaves[0].data).toMatchObject({ name: 'alice', reason: 'disconnect' })
+      expect(leaves[0].game).toBe('chess')
+    })
+
+    it('captures graceful, disconnect, and reaped reasons distinctly', async () => {
+      const room = new GameRoom(new ChessGame())
+      analytics.subscribe(room)
+
+      for (const [name, reason] of [
+        ['alice', 'graceful'],
+        ['bob', 'disconnect'],
+        ['carol', 'reaped'],
+      ] as const) {
+        const r = await room.sessions.joinPlayer(name)
+        if (!r.ok) throw new Error('join failed')
+        room.dispatchEvents(room.game.onPlayerJoin({ name, token: r.token, role: 'audience' }))
+        room.dispatchEvents(room.game.onPlayerLeave(
+          { name, token: r.token, role: 'audience' },
+          reason,
+        ))
+      }
+
+      const leaves = store.records.filter(r => r.type === 'player:left')
+      expect(leaves).toHaveLength(3)
+      const byName: Record<string, string> = {}
+      for (const rec of leaves) {
+        byName[(rec.data as any).name] = (rec.data as any).reason
+      }
+      expect(byName).toEqual({
+        alice: 'graceful',
+        bob: 'disconnect',
+        carol: 'reaped',
+      })
+    })
   })
 })

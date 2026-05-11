@@ -232,7 +232,7 @@ const server = createServer(async (req, res) => {
           name: disconnectedSession.name,
           token: disconnectedSession.token,
           role: disconnectedSession.role,
-        })
+        }, 'disconnect')
         room.dispatchEvents(events)
       })
       console.log(`[${room.game.gameId}] ${session.name} connection closed (${session.sseClients.size} remaining)`)
@@ -339,7 +339,7 @@ const server = createServer(async (req, res) => {
     session.sseClients.clear()
 
     room.sessions.removePlayer(session.token)
-    const events = room.game.onPlayerLeave(playerInfo)
+    const events = room.game.onPlayerLeave(playerInfo, 'graceful')
     room.dispatchEvents(events)
 
     console.log(`[${room.game.gameId}] ${session.name} left`)
@@ -455,7 +455,7 @@ setInterval(() => {
       session.sseClients.clear()
 
       room.sessions.removePlayer(session.token)
-      const events = room.game.onPlayerLeave(playerInfo)
+      const events = room.game.onPlayerLeave(playerInfo, 'reaped')
       room.dispatchEvents(events)
 
       console.log(`[${gameId}] ${session.name} reaped (no ping in ${Math.round((now - session.lastPingAt) / 1000)}s)`)
