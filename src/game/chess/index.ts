@@ -1,6 +1,6 @@
 import { Chess } from 'chess.js'
 import { randomUUID } from 'node:crypto'
-import type { GameModule, GameEvent, PlayerInfo, ActionResult, McpToolDef } from '../types.js'
+import type { GameModule, GameEvent, PlayerInfo, ActionResult, McpToolDef, LeaveReason } from '../types.js'
 
 const DEFAULT_TURN_TIME_LIMIT = 120_000 // 2 minutes per move
 
@@ -22,6 +22,8 @@ type PlayerState =
   | { status: 'lobby' }
   | { status: 'playing'; gameInstanceId: string }
 
+export const CHESS_BOT_NAME = 'chessbot'
+
 export class ChessGame implements GameModule {
   readonly gameId = 'chess'
 
@@ -29,7 +31,16 @@ export class ChessGame implements GameModule {
   private challenges = new Map<string, Challenge>()
   private playerStates = new Map<string, PlayerState>() // keyed by token
   private playersByToken = new Map<string, PlayerInfo>()
+  private botTokens = new Set<string>()
   private turnTimeLimit = DEFAULT_TURN_TIME_LIMIT
+
+  isBotToken(token: string): boolean {
+    return this.botTokens.has(token)
+  }
+
+  getInstanceById(gameInstanceId: string): ChessGameInstance | null {
+    return this.instances.get(gameInstanceId) ?? null
+  }
 
   // --- GameModule interface ---
 
@@ -55,9 +66,9 @@ export class ChessGame implements GameModule {
     ]
   }
 
-  onPlayerLeave(player: PlayerInfo): GameEvent[] {
+  onPlayerLeave(player: PlayerInfo, reason: LeaveReason): GameEvent[] {
     const events: GameEvent[] = [
-      { type: 'player:left', data: { name: player.name } },
+      { type: 'player:left', data: { name: player.name, reason } },
     ]
 
     const state = this.playerStates.get(player.token)
@@ -112,6 +123,8 @@ export class ChessGame implements GameModule {
         return this.handleDeclineChallenge(player, data)
       case 'get_lobby':
         return this.handleGetLobby(player)
+      case 'play_bot':
+        return this.handlePlayBot(player)
       case 'make_move':
         return this.routeToGame(player, (instance) => this.handleMove(instance, player, data))
       case 'get_board':
@@ -180,6 +193,14 @@ export class ChessGame implements GameModule {
         },
       },
       {
+        name: 'play_bot',
+        description: 'Start a game against a server-side chess bot. Use this when the lobby is empty and the human wants to play immediately.',
+        inputSchema: {
+          type: 'object',
+          properties: {},
+        },
+      },
+      {
         name: 'make_move',
         description: 'Make a chess move in standard algebraic notation (e.g. "e4", "Nf3", "O-O", "exd5")',
         inputSchema: {
@@ -215,10 +236,13 @@ export class ChessGame implements GameModule {
       ``,
       `LOBBY:`,
       `- When you first join, you're in the lobby. Use get_lobby to see who's around.`,
-      `- To play, use the challenge tool with another player's name.`,
+      `- To play another human, use the challenge tool with their name.`,
       `- If someone challenges you, you'll receive a challenge:received event.`,
       `  Discuss with your human and use accept_challenge or decline_challenge.`,
       `- Once a challenge is accepted, the game starts automatically.`,
+      `- If the lobby is empty and your human wants to play immediately, offer them`,
+      `  a match against the server bot using the play_bot tool. Mention that they`,
+      `  can call play_bot again any time. Do not surface the bot as a lobby player.`,
       ``,
       `DURING A GAME:`,
       `- Use get_board to see the position and legal moves.`,
@@ -447,6 +471,63 @@ export class ChessGame implements GameModule {
     }
   }
 
+  private handlePlayBot(player: PlayerInfo): ActionResult {
+    const state = this.playerStates.get(player.token)
+    if (state?.status === 'playing') {
+      return { ok: false, error: 'You are already in a game', events: [] }
+    }
+
+    const bot: PlayerInfo = {
+      name: CHESS_BOT_NAME,
+      token: randomUUID(),
+      role: 'bot',
+    }
+    this.botTokens.add(bot.token)
+
+    // Coin-flip color assignment.
+    const humanIsWhite = Math.random() < 0.5
+    const whitePlayer = humanIsWhite ? player : bot
+    const blackPlayer = humanIsWhite ? bot : player
+
+    const instance: ChessGameInstance = {
+      id: randomUUID(),
+      engine: new Chess(),
+      whitePlayer,
+      blackPlayer,
+    }
+    this.instances.set(instance.id, instance)
+
+    // Both human and bot get a 'playing' playerStates entry so make_move
+    // routes correctly via routeToGame. The bot stays out of the lobby
+    // because it is never registered in playersByToken (see getLobbyPlayerNames).
+    this.playerStates.set(player.token, { status: 'playing', gameInstanceId: instance.id })
+    this.playerStates.set(bot.token, { status: 'playing', gameInstanceId: instance.id })
+
+    // Cancel any pending challenges involving the human.
+    const cancelEvents = this.cancelChallengesForPlayer(player.token, instance.id)
+
+    return {
+      ok: true,
+      events: [
+        ...cancelEvents,
+        {
+          type: 'game:start',
+          data: {
+            gameInstanceId: instance.id,
+            white: whitePlayer.name,
+            black: blackPlayer.name,
+            board: instance.engine.ascii(),
+            fen: instance.engine.fen(),
+            isBotGame: true,
+          },
+          _nextPhaseTimeout: this.turnTimeLimit,
+          _phaseTimerKey: instance.id,
+        },
+        { type: 'lobby:update', data: this.getLobbyData() },
+      ],
+    }
+  }
+
   private handleGetLobby(player: PlayerInfo): ActionResult {
     return {
       ok: true,
@@ -574,9 +655,16 @@ export class ChessGame implements GameModule {
     winner?: string,
     loser?: string,
   ): GameEvent[] {
-    // Return both players to lobby
-    this.playerStates.set(instance.whitePlayer.token, { status: 'lobby' })
-    this.playerStates.set(instance.blackPlayer.token, { status: 'lobby' })
+    // Return human players to lobby; bot tokens are ephemeral (per game instance)
+    // and get fully cleaned up rather than left in the lobby state map.
+    for (const side of [instance.whitePlayer, instance.blackPlayer]) {
+      if (this.botTokens.has(side.token)) {
+        this.botTokens.delete(side.token)
+        this.playerStates.delete(side.token)
+      } else {
+        this.playerStates.set(side.token, { status: 'lobby' })
+      }
+    }
     this.instances.delete(instance.id)
 
     const gameOverData: Record<string, unknown> = {

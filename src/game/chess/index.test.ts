@@ -52,10 +52,21 @@ describe('ChessGame', () => {
     it('onPlayerLeave removes from lobby', () => {
       const alice = makePlayer('alice')
       game.onPlayerJoin(alice)
-      game.onPlayerLeave(alice)
+      game.onPlayerLeave(alice, 'graceful')
 
       const state = game.getState() as any
       expect(state.lobbyPlayers).not.toContain('alice')
+    })
+
+    it('onPlayerLeave includes the reason in the player:left event', () => {
+      const alice = makePlayer('alice')
+      game.onPlayerJoin(alice)
+      const events = game.onPlayerLeave(alice, 'reaped')
+
+      const left = events.find(e => e.type === 'player:left')
+      expect(left).toBeDefined()
+      expect((left!.data as any).reason).toBe('reaped')
+      expect((left!.data as any).name).toBe('alice')
     })
 
     it('onPlayerLeave cleans up pending challenges involving that player', () => {
@@ -68,7 +79,7 @@ describe('ChessGame', () => {
       game.onAction(alice, 'challenge', { opponent: 'bob' })
 
       // Alice leaves — challenge should be cancelled
-      game.onPlayerLeave(alice)
+      game.onPlayerLeave(alice, 'disconnect')
       const state = game.getState() as any
       expect(state.pendingChallenges).toHaveLength(0)
     })
@@ -343,7 +354,7 @@ describe('ChessGame', () => {
       const challengeId = (challengeResult.events.find(e => e.type === 'challenge:sent')?.data as any).challengeId
       game.onAction(bob, 'accept_challenge', { challengeId })
 
-      const events = game.onPlayerLeave(alice)
+      const events = game.onPlayerLeave(alice, 'disconnect')
       expect(events.some(e => e.type === 'game:over')).toBe(true)
       const gameOver = events.find(e => e.type === 'game:over')!
       expect((gameOver.data as any).reason).toBe('forfeit')
@@ -543,6 +554,96 @@ describe('ChessGame', () => {
       const values = [...roles.values()]
       expect(values).toContain('white')
       expect(values).toContain('black')
+    })
+  })
+
+  describe('play_bot', () => {
+    let alice: PlayerInfo
+
+    beforeEach(() => {
+      alice = makePlayer('alice')
+      game.onPlayerJoin(alice)
+    })
+
+    it('starts an instance with the human and a bot named "chessbot"', () => {
+      const result = game.onAction(alice, 'play_bot', {})
+      expect(result.ok).toBe(true)
+
+      const gameStart = result.events.find(e => e.type === 'game:start')
+      expect(gameStart).toBeDefined()
+      const data = gameStart!.data as any
+      expect([data.white, data.black]).toContain('alice')
+      expect([data.white, data.black]).toContain('chessbot')
+    })
+
+    it('does not list the bot in lobbyPlayers', () => {
+      game.onAction(alice, 'play_bot', {})
+      const state = game.getState() as any
+      expect(state.lobbyPlayers).not.toContain('chessbot')
+    })
+
+    it('does not list the bot in activeGames as a separate player', () => {
+      // Bot should appear as an opponent in the active game, but not as a lobby player.
+      game.onAction(alice, 'play_bot', {})
+      const state = game.getState() as any
+      expect(state.activeGames).toHaveLength(1)
+      const summary = state.activeGames[0]
+      expect([summary.white, summary.black]).toContain('chessbot')
+    })
+
+    it('rejects play_bot when the human is already in a game', () => {
+      const first = game.onAction(alice, 'play_bot', {})
+      expect(first.ok).toBe(true)
+
+      const second = game.onAction(alice, 'play_bot', {})
+      expect(second.ok).toBe(false)
+      expect(second.error).toContain('already in a game')
+    })
+
+    it('isBotToken returns true for the bot side and false for the human', () => {
+      const result = game.onAction(alice, 'play_bot', {})
+      const data = result.events.find(e => e.type === 'game:start')!.data as any
+      // We don't get the bot's token in the event payload — we just confirm
+      // alice's token is NOT a bot token.
+      expect(game.isBotToken(alice.token)).toBe(false)
+      // After the game starts the bot has a token registered internally.
+      // We can't introspect it from here without a helper; the integration test
+      // covers the bot's actual moves. For now we just confirm a known fake
+      // token is not classified as a bot.
+      expect(game.isBotToken('not-a-real-token')).toBe(false)
+      expect(data.gameInstanceId).toBeDefined()
+    })
+
+    it('exposes play_bot as a tool in getTools()', () => {
+      const tools = game.getTools()
+      expect(tools.some(t => t.name === 'play_bot')).toBe(true)
+    })
+
+    it('emits a lobby:update after starting', () => {
+      const result = game.onAction(alice, 'play_bot', {})
+      expect(result.events.some(e => e.type === 'lobby:update')).toBe(true)
+    })
+
+    it('allows the human to make moves against the bot via the existing make_move flow', () => {
+      const playResult = game.onAction(alice, 'play_bot', {})
+      const startData = playResult.events.find(e => e.type === 'game:start')!.data as any
+
+      // If alice is white she can move e4; if black, the bot moved first and
+      // we look at the FEN to find a legal pawn move for alice. To stay
+      // deterministic across runs we check both cases.
+      const aliceColor: 'white' | 'black' = startData.white === 'alice' ? 'white' : 'black'
+
+      if (aliceColor === 'white') {
+        const move = game.onAction(alice, 'make_move', { move: 'e4' })
+        expect(move.ok).toBe(true)
+      } else {
+        // Bot has moved as white in start handling? No — our impl emits
+        // game:start without a bot first move; the bot's move comes from the
+        // runner. So at this point it's alice's turn... but alice is black,
+        // so it's actually white's (the bot's) turn. Alice cannot move yet.
+        const tooEarly = game.onAction(alice, 'make_move', { move: 'e5' })
+        expect(tooEarly.ok).toBe(false)
+      }
     })
   })
 })

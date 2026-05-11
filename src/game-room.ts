@@ -3,15 +3,28 @@ import { SessionManager } from './auth.js'
 import type { GameModule, GameEvent, PlayerInfo } from './game/types.js'
 import type { PlayerStore } from './store.js'
 
+export type RoomEventListener = (event: {
+  type: string
+  data: unknown
+  _targetPlayer?: string
+  roomId: string
+}) => void
+
 export class GameRoom {
   readonly game: GameModule
   readonly sessions: SessionManager
   readonly audienceClients = new Set<ServerResponse>()
   private phaseTimers = new Map<string, NodeJS.Timeout>()
+  private eventListeners = new Set<RoomEventListener>()
 
   constructor(game: GameModule, store?: PlayerStore) {
     this.game = game
     this.sessions = new SessionManager(store)
+  }
+
+  onEvent(listener: RoomEventListener): () => void {
+    this.eventListeners.add(listener)
+    return () => { this.eventListeners.delete(listener) }
   }
 
   // Write to an SSE client, force-closing the connection on any failure so
@@ -66,6 +79,19 @@ export class GameRoom {
         this.broadcastToPlayer(_targetPlayer, broadcastable)
       } else {
         this.broadcastEverywhere(broadcastable)
+      }
+
+      for (const listener of this.eventListeners) {
+        try {
+          listener({
+            type: broadcastable.type,
+            data: broadcastable.data,
+            _targetPlayer,
+            roomId: this.game.gameId,
+          })
+        } catch (err) {
+          console.error(`[${this.game.gameId}] event listener threw:`, err)
+        }
       }
 
       if (_nextPhaseTimeout) {

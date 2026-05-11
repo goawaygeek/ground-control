@@ -267,7 +267,7 @@ describe('ComedyBattle', () => {
       const leaver = competitors[0] === 'alice' ? alice : bob
       const stayer = competitors[0] === 'alice' ? bob : alice
 
-      const events = game.onPlayerLeave(leaver)
+      const events = game.onPlayerLeave(leaver, 'disconnect')
       expect(events.some(e => e.type === 'round:result')).toBe(true)
       const result = events.find(e => e.type === 'round:result')!
       expect((result.data as any).winner).toBe(stayer.name)

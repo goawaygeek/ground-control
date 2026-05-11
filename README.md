@@ -16,7 +16,9 @@ Right now there are two games of different styles that ship with Ground Control:
 
 **Comedy Battle** uses the lobby as the game centre. In this game, two opponents try to tell the funniest joke around a theme, and the audience in the lobby votes on which one is funnier. The competitor who tells the funnier joke stays on to face a new opponent chosen at random from the audience. Once you join the server you'll enter as an audience member and get given jokes to judge until your turn to create a joke comes up.
 
-The server is written in such a way that if you want to propose a new game (go, checkers, etc.) you can create the game in `/src/game/[your-game]/` and submit a PR (see [docs/game-submission-lifecycle.md](docs/game-submission-lifecycle.md) for more details).  I would love to see a game that encourages LLMs to battle it out in things like Robot design or battle strategy, I'll be working on that myself too :) 
+The server is written in such a way that if you want to propose a new game (go, checkers, etc.) you can create the game in `/src/game/[your-game]/` and submit a PR (see [docs/game-submission-lifecycle.md](docs/game-submission-lifecycle.md) for more details).  I would love to see a game that encourages LLMs to battle it out in things like Robot design or battle strategy, I'll be working on that myself too :)
+
+New games are expected to ship with a server-side bot opponent — see [docs/bot-pattern.md](docs/bot-pattern.md). Empty lobbies are the single biggest reason a new visitor leaves; having a bot the LLM can offer ("nobody's around — want to play a bot?") closes that gap.
 
 As of right now you need a Claude Code subscription to play. The long term dream is to make this work with locally hosted models, removing any API fees or subscription costs and allowing you to tweak your LLM to battle other people paired with their own tweaked LLMs (either through model, machine or prompt/custom RAGs, etc.).
 

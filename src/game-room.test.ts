@@ -259,6 +259,84 @@ describe('GameRoom', () => {
     })
   })
 
+  describe('onEvent listeners', () => {
+    it('fires for broadcast (non-targeted) events with roomId attached', () => {
+      const room = new GameRoom(createMockGame('chess'))
+      const listener = vi.fn()
+      room.onEvent(listener)
+
+      room.dispatchEvents([{ type: 'lobby:update', data: { foo: 1 } }])
+
+      expect(listener).toHaveBeenCalledTimes(1)
+      expect(listener).toHaveBeenCalledWith({
+        type: 'lobby:update',
+        data: { foo: 1 },
+        _targetPlayer: undefined,
+        roomId: 'chess',
+      })
+    })
+
+    it('fires for targeted events and surfaces _targetPlayer', () => {
+      const room = new GameRoom(createMockGame('chess'))
+      const listener = vi.fn()
+      room.onEvent(listener)
+
+      room.dispatchEvents([{
+        type: 'challenge:received',
+        data: { challengeId: 'x' },
+        _targetPlayer: 'tok-123',
+      }])
+
+      expect(listener).toHaveBeenCalledTimes(1)
+      const call = listener.mock.calls[0][0]
+      expect(call.type).toBe('challenge:received')
+      expect(call._targetPlayer).toBe('tok-123')
+    })
+
+    it('returns an unsubscribe function that stops further calls', () => {
+      const room = new GameRoom(createMockGame())
+      const listener = vi.fn()
+      const unsubscribe = room.onEvent(listener)
+
+      room.dispatchEvents([{ type: 'a', data: {} }])
+      unsubscribe()
+      room.dispatchEvents([{ type: 'b', data: {} }])
+
+      expect(listener).toHaveBeenCalledTimes(1)
+    })
+
+    it('continues invoking remaining listeners when one throws', () => {
+      const room = new GameRoom(createMockGame())
+      const errSpy = vi.spyOn(console, 'error').mockImplementation(() => {})
+      const bad = vi.fn(() => { throw new Error('boom') })
+      const good = vi.fn()
+      room.onEvent(bad)
+      room.onEvent(good)
+
+      room.dispatchEvents([{ type: 'a', data: {} }])
+
+      expect(bad).toHaveBeenCalled()
+      expect(good).toHaveBeenCalled()
+      expect(errSpy).toHaveBeenCalled()
+      errSpy.mockRestore()
+    })
+
+    it('does not block broadcast when a listener throws', async () => {
+      const room = new GameRoom(createMockGame())
+      const errSpy = vi.spyOn(console, 'error').mockImplementation(() => {})
+      const r = await room.sessions.joinPlayer('alice')
+      if (!r.ok) throw new Error('join failed')
+      const res = createMockRes()
+      room.sessions.addSseClient(room.sessions.getSessionByToken(r.token)!, res)
+      room.onEvent(() => { throw new Error('boom') })
+
+      room.dispatchEvents([{ type: 'a', data: {} }])
+
+      expect(res.write).toHaveBeenCalled()
+      errSpy.mockRestore()
+    })
+  })
+
   describe('tryAutoStart', () => {
     it('starts the game when canStartGame returns true', async () => {
       const mockGame = createMockGame()

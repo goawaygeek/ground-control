@@ -27,6 +27,8 @@ export interface McpToolDef {
   inputSchema: Record<string, unknown>
 }
 
+export type LeaveReason = 'graceful' | 'disconnect' | 'reaped'
+
 export interface GameModule {
   readonly gameId: string
 
@@ -34,7 +36,7 @@ export interface GameModule {
   getState(): Record<string, unknown>
 
   onPlayerJoin(player: PlayerInfo): GameEvent[]
-  onPlayerLeave(player: PlayerInfo): GameEvent[]
+  onPlayerLeave(player: PlayerInfo, reason: LeaveReason): GameEvent[]
   canStartGame(players: PlayerInfo[]): boolean
 
   startRound(players: PlayerInfo[]): GameEvent[]
