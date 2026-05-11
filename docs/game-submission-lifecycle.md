@@ -20,6 +20,7 @@ A process for community members to propose, submit, and graduate games through a
 ### Beta
 - **What it is:** A working game module in the repository, flagged as beta
 - **How it gets here:** Author submits the `GameModule` implementation after their concept is voted through
+- **Submission must include a bot opponent** following the conventions in [bot-pattern.md](bot-pattern.md) — empty-lobby fallback is part of the deal, not optional polish
 - **Visible to players:** Yes, but clearly marked as beta. Players opt in knowing it may be rough.
 - **What happens next:** Needs to hit a graduation threshold to become Approved.
 

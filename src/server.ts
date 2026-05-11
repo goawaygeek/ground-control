@@ -6,6 +6,9 @@ import { fileURLToPath } from 'node:url'
 import { createGame, getAvailableGames } from './game/index.js'
 import { GameRoom } from './game-room.js'
 import { NotionPlayerStore, LocalJsonStore } from './store.js'
+import { LocalJsonlEventStore, NotionEventStore, type EventStore } from './event-store.js'
+import { Analytics } from './analytics.js'
+import { ChessBotRunner } from './game/chess/bot-runner.js'
 
 const __dirname = dirname(fileURLToPath(import.meta.url))
 const PORT = parseInt(process.env.PORT ?? '8087', 10)
@@ -25,6 +28,29 @@ if (process.env.NOTION_TOKEN && process.env.NOTION_DATABASE_ID) {
 const rooms = new Map<string, GameRoom>()
 for (const gameId of getAvailableGames()) {
   rooms.set(gameId, new GameRoom(createGame(gameId), playerStore))
+}
+
+// --- Analytics (Notion if configured, JSONL fallback) ---
+let eventStore: EventStore
+if (process.env.NOTION_TOKEN && process.env.NOTION_ANALYTICS_DATABASE_ID) {
+  eventStore = new NotionEventStore(process.env.NOTION_ANALYTICS_DATABASE_ID, process.env.NOTION_TOKEN)
+  console.log('Using Notion for analytics events')
+} else {
+  const eventsPath = join(__dirname, '..', 'data', 'events.jsonl')
+  eventStore = new LocalJsonlEventStore(eventsPath)
+  console.log(`Using local JSONL file for analytics events (${eventsPath})`)
+}
+const analytics = new Analytics(eventStore)
+for (const room of rooms.values()) {
+  analytics.subscribe(room)
+}
+
+// --- Chess bot (server-side, hidden from lobby) ---
+const chessRoom = rooms.get('chess')
+if (chessRoom && process.env.CHESSBOT_ENABLED !== 'false') {
+  const runner = new ChessBotRunner(chessRoom)
+  runner.start()
+  console.log('Chess bot enabled — humans can invoke it via play_bot')
 }
 
 function resolveRoom(pathname: string): { room: GameRoom; subpath: string } | null {
@@ -158,6 +184,12 @@ const server = createServer(async (req, res) => {
     const session = room.sessions.getSessionByToken(result.token)!
     const events = room.game.onPlayerJoin({ name: session.name, token: session.token, role: session.role })
     room.dispatchEvents(events)
+
+    analytics.recordJoin({
+      game: room.game.gameId,
+      name: result.name,
+      isReconnect: result.isReconnect,
+    })
 
     return json(res, 200, { token: result.token, name: result.name })
   }
