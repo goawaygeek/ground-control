@@ -337,6 +337,94 @@ describe('GameRoom', () => {
     })
   })
 
+  describe('_sessionState event metadata', () => {
+    it('transitions a session to in-game when _sessionState=in-game is on an event', async () => {
+      const room = new GameRoom(createMockGame())
+      const r = await room.sessions.joinPlayer('alice')
+      if (!r.ok) throw new Error('join failed')
+      expect(room.sessions.getSessionByToken(r.token)!.state).toBe('lobby')
+
+      room.dispatchEvents([{
+        type: 'game:start',
+        data: {},
+        _sessionState: 'in-game',
+        _sessionStateToken: r.token,
+      }])
+
+      expect(room.sessions.getSessionByToken(r.token)!.state).toBe('in-game')
+    })
+
+    it('transitions a session back to lobby when _sessionState=lobby is on an event', async () => {
+      const room = new GameRoom(createMockGame())
+      const r = await room.sessions.joinPlayer('alice')
+      if (!r.ok) throw new Error('join failed')
+      room.sessions.setSessionState(r.token, 'in-game')
+
+      room.dispatchEvents([{
+        type: 'game:over',
+        data: {},
+        _sessionState: 'lobby',
+        _sessionStateToken: r.token,
+      }])
+
+      expect(room.sessions.getSessionByToken(r.token)!.state).toBe('lobby')
+    })
+
+    it('does not pass _sessionState fields through to listeners', async () => {
+      const room = new GameRoom(createMockGame())
+      const r = await room.sessions.joinPlayer('alice')
+      if (!r.ok) throw new Error('join failed')
+
+      const listener = vi.fn()
+      room.onEvent(listener)
+
+      room.dispatchEvents([{
+        type: 'game:start',
+        data: { foo: 1 },
+        _sessionState: 'in-game',
+        _sessionStateToken: r.token,
+      }])
+
+      const call = listener.mock.calls[0][0]
+      expect(call).not.toHaveProperty('_sessionState')
+      expect(call).not.toHaveProperty('_sessionStateToken')
+    })
+
+    it('ignores _sessionState when the token is unknown', () => {
+      const room = new GameRoom(createMockGame())
+      // Should not throw.
+      room.dispatchEvents([{
+        type: 'game:start',
+        data: {},
+        _sessionState: 'in-game',
+        _sessionStateToken: 'nonexistent',
+      }])
+    })
+
+    it('events of type session:state are applied but not broadcast', async () => {
+      const room = new GameRoom(createMockGame())
+      const r = await room.sessions.joinPlayer('alice')
+      if (!r.ok) throw new Error('join failed')
+      const res = createMockRes()
+      room.sessions.addSseClient(room.sessions.getSessionByToken(r.token)!, res)
+      const listener = vi.fn()
+      room.onEvent(listener)
+
+      room.dispatchEvents([{
+        type: 'session:state',
+        data: {},
+        _sessionState: 'in-game',
+        _sessionStateToken: r.token,
+      }])
+
+      // State was applied
+      expect(room.sessions.getSessionByToken(r.token)!.state).toBe('in-game')
+      // But neither broadcast nor surfaced to listeners
+      expect(res.write).not.toHaveBeenCalled()
+      expect(listener).not.toHaveBeenCalled()
+    })
+  })
+
   describe('tryAutoStart', () => {
     it('starts the game when canStartGame returns true', async () => {
       const mockGame = createMockGame()

@@ -13,6 +13,14 @@ export interface GameEvent {
   _targetPlayer?: string
   /** Key for this timer — allows multiple concurrent timers (e.g. per game instance) */
   _phaseTimerKey?: string
+  /**
+   * If set, GameRoom transitions the named session into this state when
+   * dispatching the event. Use 'in-game' to exempt the session from the
+   * liveness sweep; 'lobby' to put it back. Stripped before broadcast.
+   */
+  _sessionState?: 'lobby' | 'in-game'
+  /** Token for the session whose state should be changed (see _sessionState). */
+  _sessionStateToken?: string
 }
 
 export interface ActionResult {

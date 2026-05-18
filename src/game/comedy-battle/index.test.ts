@@ -220,6 +220,83 @@ describe('ComedyBattle', () => {
     })
   })
 
+  describe('session state events', () => {
+    it('startRound emits session:state in-game for every player in the room', () => {
+      const alice = makePlayer('alice')
+      const bob = makePlayer('bob')
+      const charlie = makePlayer('charlie')  // audience
+      game.onPlayerJoin(alice)
+      game.onPlayerJoin(bob)
+      game.onPlayerJoin(charlie)
+
+      const events = game.startRound([alice, bob, charlie])
+      const stateEvents = events.filter(e => e.type === 'session:state')
+      expect(stateEvents).toHaveLength(3)
+      const tokens = stateEvents.map(e => (e as any)._sessionStateToken).sort()
+      expect(tokens).toEqual([alice.token, bob.token, charlie.token].sort())
+      for (const ev of stateEvents) {
+        expect((ev as any)._sessionState).toBe('in-game')
+      }
+    })
+
+    it('RESULTS -> LOBBY transition emits session:state lobby for every roundies player', () => {
+      const alice = makePlayer('alice')
+      const bob = makePlayer('bob')
+      game.onPlayerJoin(alice)
+      game.onPlayerJoin(bob)
+      game.startRound([alice, bob])
+
+      const competitors = (game.getState() as any).competitors as string[]
+      const [comp1, comp2] = competitors[0] === 'alice' ? [alice, bob] : [bob, alice]
+
+      game.onAction(comp1, 'submit_joke', { joke: 'A' })
+      game.onAction(comp2, 'submit_joke', { joke: 'B' })
+      game.onPhaseTimeout() // REVEAL -> VOTING
+      game.onPhaseTimeout() // VOTING -> RESULTS
+
+      const endEvents = game.onPhaseTimeout() // RESULTS -> LOBBY
+      const stateEvents = endEvents.filter(e => e.type === 'session:state')
+      expect(stateEvents).toHaveLength(2)
+      for (const ev of stateEvents) {
+        expect((ev as any)._sessionState).toBe('lobby')
+      }
+    })
+
+    it('forfeit (competitor leaves during WRITING) emits session:state lobby for everyone', () => {
+      const alice = makePlayer('alice')
+      const bob = makePlayer('bob')
+      game.onPlayerJoin(alice)
+      game.onPlayerJoin(bob)
+      game.startRound([alice, bob])
+
+      const competitors = (game.getState() as any).competitors as string[]
+      const leaver = competitors[0] === 'alice' ? alice : bob
+
+      const events = game.onPlayerLeave(leaver, 'disconnect')
+      const stateEvents = events.filter(e => e.type === 'session:state')
+      expect(stateEvents).toHaveLength(2)
+      for (const ev of stateEvents) {
+        expect((ev as any)._sessionState).toBe('lobby')
+      }
+    })
+
+    it('writing timeout with zero submissions emits session:state lobby', () => {
+      const alice = makePlayer('alice')
+      const bob = makePlayer('bob')
+      game.onPlayerJoin(alice)
+      game.onPlayerJoin(bob)
+      game.startRound([alice, bob])
+
+      const events = game.onPhaseTimeout() // WRITING with 0 submissions
+      expect(events.some(e => e.type === 'round:cancelled')).toBe(true)
+      const stateEvents = events.filter(e => e.type === 'session:state')
+      expect(stateEvents).toHaveLength(2)
+      for (const ev of stateEvents) {
+        expect((ev as any)._sessionState).toBe('lobby')
+      }
+    })
+  })
+
   describe('full phase cycle', () => {
     it('cycles LOBBY -> WRITING -> REVEAL -> VOTING -> RESULTS -> LOBBY', () => {
       const alice = makePlayer('alice')
