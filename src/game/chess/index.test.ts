@@ -159,6 +159,20 @@ describe('ChessGame', () => {
       expect(data.board).toBeDefined()
     })
 
+    it('accept_challenge emits session:state in-game for both players', () => {
+      const challengeResult = game.onAction(alice, 'challenge', { opponent: 'bob' })
+      const challengeId = (challengeResult.events.find(e => e.type === 'challenge:sent')?.data as any).challengeId
+
+      const acceptResult = game.onAction(bob, 'accept_challenge', { challengeId })
+      const stateEvents = acceptResult.events.filter(e => e.type === 'session:state')
+      expect(stateEvents).toHaveLength(2)
+      const tokens = stateEvents.map(e => (e as any)._sessionStateToken).sort()
+      expect(tokens).toEqual([alice.token, bob.token].sort())
+      for (const ev of stateEvents) {
+        expect((ev as any)._sessionState).toBe('in-game')
+      }
+    })
+
     it('accept_challenge rejects if not the challenged player', () => {
       const challengeResult = game.onAction(alice, 'challenge', { opponent: 'bob' })
       const challengeId = (challengeResult.events.find(e => e.type === 'challenge:sent')?.data as any).challengeId
@@ -622,6 +636,24 @@ describe('ChessGame', () => {
     it('emits a lobby:update after starting', () => {
       const result = game.onAction(alice, 'play_bot', {})
       expect(result.events.some(e => e.type === 'lobby:update')).toBe(true)
+    })
+
+    it('emits a session:state in-game event for the human player', () => {
+      const result = game.onAction(alice, 'play_bot', {})
+      const stateEvents = result.events.filter(e => e.type === 'session:state')
+      // Exactly one — the human. The bot has no SessionManager session.
+      expect(stateEvents).toHaveLength(1)
+      expect((stateEvents[0] as any)._sessionState).toBe('in-game')
+      expect((stateEvents[0] as any)._sessionStateToken).toBe(alice.token)
+    })
+
+    it('emits a session:state lobby event on game end (resign)', () => {
+      game.onAction(alice, 'play_bot', {})
+      const resignResult = game.onAction(alice, 'resign', {})
+      const stateEvents = resignResult.events.filter(e => e.type === 'session:state')
+      expect(stateEvents).toHaveLength(1)
+      expect((stateEvents[0] as any)._sessionState).toBe('lobby')
+      expect((stateEvents[0] as any)._sessionStateToken).toBe(alice.token)
     })
 
     it('allows the human to make moves against the bot via the existing make_move flow', () => {

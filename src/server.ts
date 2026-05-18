@@ -439,13 +439,13 @@ setInterval(() => {
 
 // Liveness sweep every 30 seconds — reap sessions whose client hasn't pinged
 // in PING_TIMEOUT_MS. Catches Cloud Run's half-open SSE connections.
+// In-game sessions are exempt (see issue #8) — they're protected by the
+// opponent's interest in the game and have their own forfeit logic.
 const PING_TIMEOUT_MS = 90_000
 setInterval(() => {
   const now = Date.now()
   for (const [gameId, room] of rooms) {
-    for (const session of room.sessions.getActiveSessions()) {
-      if (now - session.lastPingAt <= PING_TIMEOUT_MS) continue
-
+    for (const session of room.sessions.getSessionsToReap(now, PING_TIMEOUT_MS)) {
       const playerInfo = { name: session.name, token: session.token, role: session.role }
 
       // Close any lingering SSE connections so they don't pile up

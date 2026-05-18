@@ -73,7 +73,25 @@ export class GameRoom {
 
   dispatchEvents(events: GameEvent[]): void {
     for (const event of events) {
-      const { _nextPhaseTimeout, _targetPlayer, _phaseTimerKey, ...broadcastable } = event
+      const {
+        _nextPhaseTimeout,
+        _targetPlayer,
+        _phaseTimerKey,
+        _sessionState,
+        _sessionStateToken,
+        ...broadcastable
+      } = event
+
+      if (_sessionState && _sessionStateToken) {
+        this.sessions.setSessionState(_sessionStateToken, _sessionState)
+      }
+
+      // session:state events carry only state-change metadata and are not
+      // broadcast or surfaced to listeners. They're an internal channel for
+      // games to mark sessions as in-game/lobby.
+      if (broadcastable.type === 'session:state') {
+        continue
+      }
 
       if (_targetPlayer) {
         this.broadcastToPlayer(_targetPlayer, broadcastable)

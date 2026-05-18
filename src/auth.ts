@@ -2,6 +2,8 @@ import { IncomingMessage, ServerResponse } from 'node:http'
 import { randomUUID } from 'node:crypto'
 import type { PlayerStore } from './store.js'
 
+export type SessionState = 'lobby' | 'in-game'
+
 export interface PlayerSession {
   name: string
   token: string
@@ -10,6 +12,12 @@ export interface PlayerSession {
   disconnectTimer: NodeJS.Timeout | null
   /** Timestamp of last client liveness signal (SSE connect or /ping). */
   lastPingAt: number
+  /**
+   * Lobby vs in-game. In-game sessions are exempt from the liveness sweep
+   * because their opponent's interest in the game is reason enough to keep
+   * the session alive — see issue #8.
+   */
+  state: SessionState
 }
 
 export type JoinResult = { ok: true; token: string; name: string; isReconnect: boolean } | { ok: false; error: string }
@@ -90,6 +98,7 @@ export class SessionManager {
       sseClients: new Set(),
       disconnectTimer: null,
       lastPingAt: Date.now(),
+      state: 'lobby',
     }
     this.sessions.set(token, session)
     this.nameToToken.set(record.name, token)
@@ -105,6 +114,7 @@ export class SessionManager {
       sseClients: new Set(),
       disconnectTimer: null,
       lastPingAt: Date.now(),
+      state: 'lobby',
     }
     this.sessions.set(token, session)
     this.nameToToken.set(name, token)
@@ -180,6 +190,27 @@ export class SessionManager {
   setRole(token: string, role: string): void {
     const session = this.sessions.get(token)
     if (session) session.role = role
+  }
+
+  setSessionState(token: string, state: SessionState): void {
+    const session = this.sessions.get(token)
+    if (session) session.state = state
+  }
+
+  /**
+   * Returns sessions that should be cleaned up by the liveness sweep:
+   * lobby sessions whose lastPingAt is older than the timeout. In-game
+   * sessions are exempt — see issue #8.
+   */
+  getSessionsToReap(now: number, timeoutMs: number): PlayerSession[] {
+    const stale: PlayerSession[] = []
+    for (const session of this.sessions.values()) {
+      if (session.state !== 'lobby') continue
+      if (now - session.lastPingAt > timeoutMs) {
+        stale.push(session)
+      }
+    }
+    return stale
   }
 }
 

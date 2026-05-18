@@ -54,6 +54,9 @@ export class ComedyBattle implements GameModule {
   private roundNumber = 0
   private usedThemes: Set<string> = new Set()
   private previousWinnerToken: string | null = null
+  /** Tokens of all players who were in the room when the current round started.
+   *  Used to mark them back to lobby state when the round ends. See issue #8. */
+  private currentRoundPlayerTokens: string[] = []
 
   constructor(durations?: Partial<PhaseDurations>) {
     this.durations = { ...DEFAULT_DURATIONS, ...durations }
@@ -110,6 +113,7 @@ export class ComedyBattle implements GameModule {
             scores: Object.fromEntries(this.scores),
           },
         })
+        events.push(...this.releaseRoundPlayers())
       }
     }
 
@@ -142,17 +146,31 @@ export class ComedyBattle implements GameModule {
     this.competitors = this.selectCompetitors(players)
     this.phase = 'WRITING'
 
-    return [{
-      type: 'round:start',
-      data: {
-        roundNumber: this.roundNumber,
-        theme: this.currentTheme,
-        competitors: this.competitors.map(c => c.name),
-        timeLimitSeconds: this.durations.writing / 1000,
-        deadline: new Date(Date.now() + this.durations.writing).toISOString(),
+    // Mark every player in the room as in-game while the round is active —
+    // competitors are writing, the audience is about to vote. Liveness sweep
+    // should leave them alone until results land. See issue #8.
+    this.currentRoundPlayerTokens = players.map(p => p.token)
+    const sessionStateEvents: GameEvent[] = players.map(p => ({
+      type: 'session:state',
+      data: {},
+      _sessionState: 'in-game' as const,
+      _sessionStateToken: p.token,
+    }))
+
+    return [
+      {
+        type: 'round:start',
+        data: {
+          roundNumber: this.roundNumber,
+          theme: this.currentTheme,
+          competitors: this.competitors.map(c => c.name),
+          timeLimitSeconds: this.durations.writing / 1000,
+          deadline: new Date(Date.now() + this.durations.writing).toISOString(),
+        },
+        _nextPhaseTimeout: this.durations.writing,
       },
-      _nextPhaseTimeout: this.durations.writing,
-    }]
+      ...sessionStateEvents,
+    ]
   }
 
   onAction(player: PlayerInfo, action: string, data: unknown): ActionResult {
@@ -173,7 +191,10 @@ export class ComedyBattle implements GameModule {
         if (this.submissions.length === 0) {
           this.phase = 'LOBBY'
           this.resetRoundState()
-          return [{ type: 'round:cancelled', data: { reason: 'No jokes submitted in time' } }]
+          return [
+            { type: 'round:cancelled', data: { reason: 'No jokes submitted in time' } },
+            ...this.releaseRoundPlayers(),
+          ]
         }
         // If only one submitted, they win by default
         if (this.submissions.length === 1) {
@@ -183,16 +204,19 @@ export class ComedyBattle implements GameModule {
           const loser = this.competitors!.find(c => c.token !== winner.playerToken)!
           this.phase = 'LOBBY'
           this.resetRoundState()
-          return [{
-            type: 'round:result',
-            data: {
-              winner: winner.playerName,
-              loser: loser.name,
-              reason: 'timeout',
-              joke: winner.joke,
-              scores: Object.fromEntries(this.scores),
+          return [
+            {
+              type: 'round:result',
+              data: {
+                winner: winner.playerName,
+                loser: loser.name,
+                reason: 'timeout',
+                joke: winner.joke,
+                scores: Object.fromEntries(this.scores),
+              },
             },
-          }]
+            ...this.releaseRoundPlayers(),
+          ]
         }
         return this.transitionToReveal()
 
@@ -204,7 +228,10 @@ export class ComedyBattle implements GameModule {
 
       case 'RESULTS':
         this.phase = 'LOBBY'
-        return [{ type: 'phase:lobby', data: { message: 'Waiting for next round...' } }]
+        return [
+          { type: 'phase:lobby', data: { message: 'Waiting for next round...' } },
+          ...this.releaseRoundPlayers(),
+        ]
 
       default:
         return []
@@ -508,5 +535,20 @@ export class ComedyBattle implements GameModule {
     this.competitors = null
     this.submissions = []
     this.votes.clear()
+  }
+
+  /**
+   * Emit session:state lobby events for everyone who was in the round, then
+   * clear the roster. Called at every LOBBY transition. See issue #8.
+   */
+  private releaseRoundPlayers(): GameEvent[] {
+    const events: GameEvent[] = this.currentRoundPlayerTokens.map(token => ({
+      type: 'session:state',
+      data: {},
+      _sessionState: 'lobby' as const,
+      _sessionStateToken: token,
+    }))
+    this.currentRoundPlayerTokens = []
+    return events
   }
 }

@@ -120,6 +120,98 @@ describe('SessionManager', () => {
     })
   })
 
+  describe('session state (lobby vs in-game)', () => {
+    it('new sessions start in the lobby', async () => {
+      const sm = new SessionManager()
+      const r = await sm.joinPlayer('alice')
+      if (!r.ok) throw new Error('join failed')
+      expect(sm.getSessionByToken(r.token)!.state).toBe('lobby')
+    })
+
+    it('setSessionState transitions between lobby and in-game', async () => {
+      const sm = new SessionManager()
+      const r = await sm.joinPlayer('alice')
+      if (!r.ok) throw new Error('join failed')
+
+      sm.setSessionState(r.token, 'in-game')
+      expect(sm.getSessionByToken(r.token)!.state).toBe('in-game')
+
+      sm.setSessionState(r.token, 'lobby')
+      expect(sm.getSessionByToken(r.token)!.state).toBe('lobby')
+    })
+
+    it('setSessionState is a no-op for unknown tokens', () => {
+      const sm = new SessionManager()
+      // Should not throw.
+      sm.setSessionState('nonexistent-token', 'in-game')
+    })
+  })
+
+  describe('getSessionsToReap', () => {
+    it('returns lobby sessions whose lastPingAt is older than the timeout', async () => {
+      const sm = new SessionManager()
+      const r = await sm.joinPlayer('alice')
+      if (!r.ok) throw new Error('join failed')
+
+      const session = sm.getSessionByToken(r.token)!
+      session.lastPingAt = 1000
+
+      const toReap = sm.getSessionsToReap(/* now */ 100_000, /* timeoutMs */ 90_000)
+      expect(toReap.map(s => s.name)).toEqual(['alice'])
+    })
+
+    it('does NOT reap lobby sessions whose lastPingAt is within the timeout', async () => {
+      const sm = new SessionManager()
+      const r = await sm.joinPlayer('alice')
+      if (!r.ok) throw new Error('join failed')
+
+      const session = sm.getSessionByToken(r.token)!
+      session.lastPingAt = 50_000
+
+      const toReap = sm.getSessionsToReap(100_000, 90_000)
+      expect(toReap).toHaveLength(0)
+    })
+
+    it('does NOT reap in-game sessions even if they have stopped pinging entirely', async () => {
+      const sm = new SessionManager()
+      const r = await sm.joinPlayer('alice')
+      if (!r.ok) throw new Error('join failed')
+
+      const session = sm.getSessionByToken(r.token)!
+      session.lastPingAt = 0           // Ancient
+      sm.setSessionState(r.token, 'in-game')
+
+      const toReap = sm.getSessionsToReap(100_000, 90_000)
+      expect(toReap).toHaveLength(0)
+    })
+
+    it('reaps a player who returned to the lobby after a game and went silent', async () => {
+      const sm = new SessionManager()
+      const r = await sm.joinPlayer('alice')
+      if (!r.ok) throw new Error('join failed')
+
+      sm.setSessionState(r.token, 'in-game')
+      // Player goes silent during the game (but is protected by in-game state).
+      sm.getSessionByToken(r.token)!.lastPingAt = 0
+      expect(sm.getSessionsToReap(100_000, 90_000)).toHaveLength(0)
+
+      // Game ends — back to lobby.
+      sm.setSessionState(r.token, 'lobby')
+      expect(sm.getSessionsToReap(100_000, 90_000).map(s => s.name)).toEqual(['alice'])
+    })
+
+    it('returns multiple sessions when several are stale and in the lobby', async () => {
+      const sm = new SessionManager()
+      for (const name of ['a', 'b', 'c']) {
+        const r = await sm.joinPlayer(name)
+        if (!r.ok) throw new Error('join failed')
+        sm.getSessionByToken(r.token)!.lastPingAt = 0
+      }
+      const toReap = sm.getSessionsToReap(100_000, 90_000)
+      expect(toReap.map(s => s.name).sort()).toEqual(['a', 'b', 'c'])
+    })
+  })
+
   describe('joinPlayer with PlayerStore', () => {
     let dir: string
     let store: LocalJsonStore

@@ -441,6 +441,10 @@ export class ChessGame implements GameModule {
           _nextPhaseTimeout: this.turnTimeLimit,
           _phaseTimerKey: instance.id,
         },
+        // Mark both players as in-game so the liveness sweep leaves them alone
+        // for the duration of the match. See issue #8.
+        { type: 'session:state', data: {}, _sessionState: 'in-game', _sessionStateToken: whitePlayer.token },
+        { type: 'session:state', data: {}, _sessionState: 'in-game', _sessionStateToken: blackPlayer.token },
         { type: 'lobby:update', data: this.getLobbyData() },
       ],
     }
@@ -523,6 +527,9 @@ export class ChessGame implements GameModule {
           _nextPhaseTimeout: this.turnTimeLimit,
           _phaseTimerKey: instance.id,
         },
+        // Mark the human as in-game so the liveness sweep leaves them alone
+        // for the duration of the match. See issue #8. The bot has no session.
+        { type: 'session:state', data: {}, _sessionState: 'in-game', _sessionStateToken: player.token },
         { type: 'lobby:update', data: this.getLobbyData() },
       ],
     }
@@ -655,6 +662,14 @@ export class ChessGame implements GameModule {
     winner?: string,
     loser?: string,
   ): GameEvent[] {
+    // Snapshot which side is the bot before we mutate botTokens below.
+    const humanTokens: string[] = []
+    for (const side of [instance.whitePlayer, instance.blackPlayer]) {
+      if (!this.botTokens.has(side.token)) {
+        humanTokens.push(side.token)
+      }
+    }
+
     // Return human players to lobby; bot tokens are ephemeral (per game instance)
     // and get fully cleaned up rather than left in the lobby state map.
     for (const side of [instance.whitePlayer, instance.blackPlayer]) {
@@ -679,10 +694,19 @@ export class ChessGame implements GameModule {
       gameOverData.black = instance.blackPlayer.name
     }
 
-    return [
-      { type: 'game:over', data: gameOverData },
-      { type: 'lobby:update', data: this.getLobbyData() },
-    ]
+    // Put real players back in the lobby state so the liveness sweep can
+    // reap them again if they've been silent.
+    const events: GameEvent[] = [{ type: 'game:over', data: gameOverData }]
+    for (const token of humanTokens) {
+      events.push({
+        type: 'session:state',
+        data: {},
+        _sessionState: 'lobby',
+        _sessionStateToken: token,
+      })
+    }
+    events.push({ type: 'lobby:update', data: this.getLobbyData() })
+    return events
   }
 
   private findPlayerByName(name: string): PlayerInfo | null {
