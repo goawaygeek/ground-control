@@ -2,7 +2,10 @@ import { Chess } from 'chess.js'
 import { randomUUID } from 'node:crypto'
 import type { GameModule, GameEvent, PlayerInfo, ActionResult, McpToolDef, LeaveReason } from '../types.js'
 
-const DEFAULT_TURN_TIME_LIMIT = 120_000 // 2 minutes per move
+// 1 hour per move — generous holding pattern while #10 designs proper
+// per-game clock controls. The clock today exists mainly to clean up
+// abandoned games; gameplay pressure isn't its primary job.
+const DEFAULT_TURN_TIME_LIMIT = 60 * 60 * 1000
 
 interface Challenge {
   id: string
