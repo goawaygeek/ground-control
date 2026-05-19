@@ -173,7 +173,7 @@ export class ChannelClient {
     }
   }
 
-  private async postToServer(endpoint: string, body: unknown): Promise<Result> {
+  private async postToServer(endpoint: string, body: unknown, allowRetry = true): Promise<Result> {
     if (!this.isConfigured()) {
       return { ok: false, error: 'Not registered yet. Use set_name first.' }
     }
@@ -188,6 +188,17 @@ export class ChannelClient {
         body: JSON.stringify(body),
       })
 
+      // Auto-recovery: a 401 here usually means the server was restarted and
+      // its in-memory session map was wiped, even though our token is still
+      // valid (it's persisted in Notion). Call /join with the stored token to
+      // restore the session, then retry the request once. See issue #12.
+      if (res.status === 401 && allowRetry && this.token) {
+        const recovered = await this.rejoinWithToken()
+        if (recovered) {
+          return this.postToServer(endpoint, body, /* allowRetry */ false)
+        }
+      }
+
       if (!res.ok) {
         const text = await res.text()
         return { ok: false, error: text }
@@ -200,6 +211,25 @@ export class ChannelClient {
       }
     } catch (err) {
       return { ok: false, error: `Request failed: ${err instanceof Error ? err.message : String(err)}` }
+    }
+  }
+
+  /**
+   * Re-call /join with the current stored token. Used to recover from server
+   * restarts where the in-memory session was wiped. Does not reset SSE or ping
+   * timer — those are already running and the server doesn't track them per-session.
+   */
+  private async rejoinWithToken(): Promise<boolean> {
+    if (!this.token) return false
+    try {
+      const res = await this.fetch(`${this.serverUrl}/join`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ token: this.token }),
+      })
+      return res.ok
+    } catch {
+      return false
     }
   }
 }
