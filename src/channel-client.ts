@@ -147,21 +147,58 @@ export class ChannelClient {
    * Start posting /ping every PING_INTERVAL_MS so the server knows we're alive.
    * Cloud Run holds half-open SSE connections after the client dies, so the
    * server can't tell from socket state alone — this is the reliable signal.
-   * Failures are swallowed: a single missed ping is fine, the server has a
-   * 90s grace window before reaping.
+   * Transient network errors are fine (the server has a 90s grace window);
+   * 401s mean the server forgot us and pingOnce will recover + notify.
    */
   private startPinging(): void {
     if (this.pingTimer) return
     this.pingTimer = setInterval(() => {
-      if (!this.token) return
-      this.fetch(`${this.serverUrl}/ping`, {
-        method: 'POST',
-        headers: { 'Authorization': `Bearer ${this.token}` },
-      }).catch(() => { /* transient network errors are fine */ })
+      this.pingOnce().catch(() => { /* swallow — pingOnce handles its own errors */ })
     }, PING_INTERVAL_MS)
     // Don't keep the Node process alive just for the ping timer
     if (typeof (this.pingTimer as any)?.unref === 'function') {
       (this.pingTimer as any).unref()
+    }
+  }
+
+  /**
+   * Fire one ping. Exposed for testability; called repeatedly by startPinging.
+   *
+   *  - 200 → fine, do nothing
+   *  - 401 → server forgot our session (restart, deploy, etc.). Try to rejoin
+   *    using the stored token. Emit a system event so Claude can tell the user
+   *    something happened — either "session reset, you're back in" or "session
+   *    lost, please reconnect".
+   *  - Network errors → silent; one missed ping is within the grace window
+   */
+  async pingOnce(): Promise<void> {
+    if (!this.token) return
+    let res
+    try {
+      res = await this.fetch(`${this.serverUrl}/ping`, {
+        method: 'POST',
+        headers: { 'Authorization': `Bearer ${this.token}` },
+      })
+    } catch {
+      // Transient network blip; server has 90s of slack.
+      return
+    }
+
+    if (res.status !== 401) return
+
+    const recovered = await this.rejoinWithToken()
+    if (recovered) {
+      this.onEvent(
+        'system:session-reset',
+        'The game server was restarted and lost track of your session. ' +
+        'You have been reconnected automatically. Any game that was in progress is gone.',
+      )
+    } else {
+      this.onEvent(
+        'system:session-lost',
+        'The game server no longer recognises your session and the automatic ' +
+        'reconnect attempt failed. You may need to set_name again to rejoin.',
+      )
     }
   }
 

@@ -252,4 +252,104 @@ describe('ChannelClient', () => {
       expect(fetch).toHaveBeenCalledTimes(4)
     })
   })
+
+  describe('pingOnce: surface server-side session loss to Claude', () => {
+    /**
+     * The ping loop runs in the background while the user is idle. If the
+     * server forgets us (restart, deploy, etc.), the next ping returns 401.
+     * The client should auto-rejoin and emit an MCP notification so Claude
+     * can tell the user something happened.
+     */
+    function mockResponse(status: number, body: unknown = '') {
+      return {
+        ok: status >= 200 && status < 300,
+        status,
+        json: () => Promise.resolve(body),
+        text: () => Promise.resolve(typeof body === 'string' ? body : JSON.stringify(body)),
+      }
+    }
+
+    it('does nothing when the ping returns 200', async () => {
+      const fetch = vi.fn()
+        .mockResolvedValueOnce(mockResponse(200, { token: 'tok-1', name: 'alice' }))
+        .mockResolvedValueOnce(mockResponse(200))
+
+      const client = new ChannelClient('http://localhost:8087', onEvent, fetch)
+      await client.setName('alice')
+
+      const onEventCallsBefore = onEvent.mock.calls.length
+      await client.pingOnce()
+
+      expect(fetch).toHaveBeenLastCalledWith('http://localhost:8087/ping', expect.any(Object))
+      // No extra events emitted on a successful ping
+      expect(onEvent.mock.calls.length).toBe(onEventCallsBefore)
+    })
+
+    it('auto-rejoins and emits system:session-reset when ping returns 401', async () => {
+      const fetch = vi.fn()
+        .mockResolvedValueOnce(mockResponse(200, { token: 'tok-1', name: 'alice' }))
+        // ping → 401
+        .mockResolvedValueOnce(mockResponse(401, 'Unauthorized'))
+        // recovery join succeeds
+        .mockResolvedValueOnce(mockResponse(200, { token: 'tok-1', name: 'alice' }))
+
+      const client = new ChannelClient('http://localhost:8087', onEvent, fetch)
+      await client.setName('alice')
+
+      onEvent.mockClear()
+      await client.pingOnce()
+
+      // 3 fetches in this slice: ping, recovery /join. (4 total including setName but
+      // setName fired pre-clear.) We assert by url:
+      const urls = fetch.mock.calls.map(c => c[0])
+      expect(urls).toContain('http://localhost:8087/ping')
+      expect(urls.filter(u => u === 'http://localhost:8087/join').length).toBeGreaterThanOrEqual(1)
+
+      // A system:session-reset event was emitted to the MCP layer
+      expect(onEvent).toHaveBeenCalledWith('system:session-reset', expect.any(String))
+    })
+
+    it('emits system:session-lost when recovery join also fails', async () => {
+      const fetch = vi.fn()
+        .mockResolvedValueOnce(mockResponse(200, { token: 'tok-1', name: 'alice' }))
+        // ping → 401
+        .mockResolvedValueOnce(mockResponse(401, 'Unauthorized'))
+        // recovery join also fails
+        .mockResolvedValueOnce(mockResponse(401, { error: 'Invalid token' }))
+
+      const client = new ChannelClient('http://localhost:8087', onEvent, fetch)
+      await client.setName('alice')
+
+      onEvent.mockClear()
+      await client.pingOnce()
+
+      expect(onEvent).toHaveBeenCalledWith('system:session-lost', expect.any(String))
+    })
+
+    it('does not emit notifications when the ping just has a transient network error', async () => {
+      const fetch = vi.fn()
+        .mockResolvedValueOnce(mockResponse(200, { token: 'tok-1', name: 'alice' }))
+        .mockRejectedValueOnce(new Error('ECONNRESET'))
+
+      const client = new ChannelClient('http://localhost:8087', onEvent, fetch)
+      await client.setName('alice')
+
+      onEvent.mockClear()
+      await client.pingOnce()  // should not throw
+
+      // No notification — single transient errors are not a session loss
+      expect(onEvent).not.toHaveBeenCalledWith(
+        expect.stringMatching(/^system:/),
+        expect.any(String),
+      )
+    })
+
+    it('pingOnce is a no-op when not configured', async () => {
+      const fetch = vi.fn()
+      const client = new ChannelClient('http://localhost:8087', onEvent, fetch)
+      // Never called setName
+      await client.pingOnce()
+      expect(fetch).not.toHaveBeenCalled()
+    })
+  })
 })
