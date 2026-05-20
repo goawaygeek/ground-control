@@ -2,10 +2,11 @@ import { Chess } from 'chess.js'
 import { randomUUID } from 'node:crypto'
 import type { GameModule, GameEvent, PlayerInfo, ActionResult, McpToolDef, LeaveReason } from '../types.js'
 
-// 1 hour per move — generous holding pattern while #10 designs proper
-// per-game clock controls. The clock today exists mainly to clean up
-// abandoned games; gameplay pressure isn't its primary job.
-const DEFAULT_TURN_TIME_LIMIT = 60 * 60 * 1000
+// Turn clock is intentionally absent for beta — see #10 for the design
+// conversation about how to bring it back properly (per-game configuration,
+// separating abandonment cleanup from move pressure, bot games exempt, etc.).
+// Removing it for now closes a class of UX bugs where players got forfeited
+// while collaborating with their LLM on a move.
 
 interface Challenge {
   id: string
@@ -35,7 +36,6 @@ export class ChessGame implements GameModule {
   private playerStates = new Map<string, PlayerState>() // keyed by token
   private playersByToken = new Map<string, PlayerInfo>()
   private botTokens = new Set<string>()
-  private turnTimeLimit = DEFAULT_TURN_TIME_LIMIT
 
   isBotToken(token: string): boolean {
     return this.botTokens.has(token)
@@ -139,16 +139,10 @@ export class ChessGame implements GameModule {
     }
   }
 
-  onPhaseTimeout(timerKey?: string): GameEvent[] {
-    if (!timerKey) return []
-    const instance = this.instances.get(timerKey)
-    if (!instance) return []
-
-    const currentTurn = instance.engine.turn()
-    const loser = currentTurn === 'w' ? instance.whitePlayer : instance.blackPlayer
-    const winner = currentTurn === 'w' ? instance.blackPlayer : instance.whitePlayer
-
-    return this.endGame(instance, 'timeout', winner.name, loser.name)
+  // No phase timers in beta — interface method required by GameModule but
+  // chess no longer schedules any. See #10.
+  onPhaseTimeout(_timerKey?: string): GameEvent[] {
+    return []
   }
 
   getTools(): McpToolDef[] {
@@ -319,14 +313,13 @@ export class ChessGame implements GameModule {
     return roles
   }
 
+  // No configurable knobs in beta. Required by GameModule interface.
   getConfig(): Record<string, unknown> {
-    return { turnTimeLimit: this.turnTimeLimit }
+    return {}
   }
 
-  setConfig(config: Record<string, unknown>): void {
-    if (typeof config.turnTimeLimit === 'number' && config.turnTimeLimit > 0) {
-      this.turnTimeLimit = config.turnTimeLimit
-    }
+  setConfig(_config: Record<string, unknown>): void {
+    // Intentional no-op.
   }
 
   // --- Lobby actions ---
@@ -441,8 +434,6 @@ export class ChessGame implements GameModule {
             board: instance.engine.ascii(),
             fen: instance.engine.fen(),
           },
-          _nextPhaseTimeout: this.turnTimeLimit,
-          _phaseTimerKey: instance.id,
         },
         // Mark both players as in-game so the liveness sweep leaves them alone
         // for the duration of the match. See issue #8.
@@ -527,8 +518,6 @@ export class ChessGame implements GameModule {
             fen: instance.engine.fen(),
             isBotGame: true,
           },
-          _nextPhaseTimeout: this.turnTimeLimit,
-          _phaseTimerKey: instance.id,
         },
         // Mark the human as in-game so the liveness sweep leaves them alone
         // for the duration of the match. See issue #8. The bot has no session.
@@ -608,8 +597,6 @@ export class ChessGame implements GameModule {
         isCheck: instance.engine.isCheck(),
         moveNumber: instance.engine.moveNumber(),
       },
-      _nextPhaseTimeout: this.turnTimeLimit,
-      _phaseTimerKey: instance.id,
     }]
 
     // Check for game end

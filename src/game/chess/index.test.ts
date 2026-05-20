@@ -282,10 +282,11 @@ describe('ChessGame', () => {
       expect((boardEvent.data as any).gameInstanceId).toBe(gameInstanceId)
     })
 
-    it('sets _phaseTimerKey to instance id on move events', () => {
+    it('does not attach a phase timer to move events (chess clock removed for beta)', () => {
       const result = game.onAction(white, 'make_move', { move: 'e4' })
       const moveEvent = result.events.find(e => e.type === 'move:made')!
-      expect(moveEvent._phaseTimerKey).toBe(gameInstanceId)
+      expect(moveEvent._nextPhaseTimeout).toBeUndefined()
+      expect(moveEvent._phaseTimerKey).toBeUndefined()
     })
   })
 
@@ -490,8 +491,8 @@ describe('ChessGame', () => {
     })
   })
 
-  describe('onPhaseTimeout', () => {
-    it('forfeits the correct game instance by timer key', () => {
+  describe('onPhaseTimeout (no-op, chess clock removed for beta)', () => {
+    it('returns empty for any timer key, even an active game', () => {
       const alice = makePlayer('alice')
       const bob = makePlayer('bob')
       game.onPlayerJoin(alice)
@@ -502,14 +503,9 @@ describe('ChessGame', () => {
       const acceptResult = game.onAction(bob, 'accept_challenge', { challengeId })
       const gameInstanceId = (acceptResult.events.find(e => e.type === 'game:start')!.data as any).gameInstanceId
 
-      const events = game.onPhaseTimeout(gameInstanceId)
-      expect(events.some(e => e.type === 'game:over')).toBe(true)
-      expect((events.find(e => e.type === 'game:over')!.data as any).reason).toBe('timeout')
-    })
-
-    it('returns empty for unknown timer key', () => {
-      const events = game.onPhaseTimeout('nonexistent')
-      expect(events).toEqual([])
+      expect(game.onPhaseTimeout(gameInstanceId)).toEqual([])
+      expect(game.onPhaseTimeout('nonexistent')).toEqual([])
+      expect(game.onPhaseTimeout()).toEqual([])
     })
   })
 
@@ -536,13 +532,14 @@ describe('ChessGame', () => {
   })
 
   describe('getConfig / setConfig', () => {
-    it('returns config with turn time limit', () => {
-      expect(game.getConfig().turnTimeLimit).toBeDefined()
+    it('returns an empty config (no configurable knobs in beta)', () => {
+      expect(game.getConfig()).toEqual({})
     })
 
-    it('setConfig updates values', () => {
-      game.setConfig({ turnTimeLimit: 30000 })
-      expect(game.getConfig().turnTimeLimit).toBe(30000)
+    it('ignores unknown config keys (no turnTimeLimit anymore)', () => {
+      // Should not throw or persist anything.
+      game.setConfig({ turnTimeLimit: 30000, somethingElse: 'value' })
+      expect(game.getConfig()).toEqual({})
     })
   })
 
