@@ -27,6 +27,13 @@ export interface ActionResult {
   ok: boolean
   error?: string
   events: GameEvent[]
+  /**
+   * Optional data to include in the synchronous HTTP response for this action.
+   * Used by the caller (e.g. the LLM via MCP) to know the immediate result
+   * without waiting for the SSE event to round-trip. See issue #15 — without
+   * this, the LLM has been observed to hallucinate intermediate board states.
+   */
+  responseData?: Record<string, unknown>
 }
 
 export interface McpToolDef {

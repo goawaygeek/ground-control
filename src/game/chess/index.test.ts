@@ -288,6 +288,36 @@ describe('ChessGame', () => {
       expect(moveEvent._nextPhaseTimeout).toBeUndefined()
       expect(moveEvent._phaseTimerKey).toBeUndefined()
     })
+
+    // Issue #15: the action result must echo the resulting board state so
+    // callers don't have to wait for the SSE event to know what happened.
+    // Without this, the LLM hallucinates board positions between calling
+    // make_move and the move:made event arriving.
+    it('returns the new board state in responseData (so callers do not hallucinate)', () => {
+      const result = game.onAction(white, 'make_move', { move: 'e4' })
+      expect(result.ok).toBe(true)
+      expect(result.responseData).toBeDefined()
+      const data = result.responseData!
+      expect(data.move).toBe('e4')
+      expect(data.fen).toBeDefined()
+      expect(data.board).toBeDefined()
+      expect(data.turn).toBe('black')
+      expect(data.gameInstanceId).toBe(gameInstanceId)
+      expect(data.player).toBe('alice')
+    })
+
+    it('responseData reflects the move applied (not pre-move state)', () => {
+      const result = game.onAction(white, 'make_move', { move: 'e4' })
+      // The FEN after e4 should include the pawn on e4 and black-to-move.
+      expect((result.responseData!.fen as string)).toContain(' b ')
+      expect((result.responseData!.board as string)).toContain('P')
+    })
+
+    it('does not include responseData when the move is rejected', () => {
+      const result = game.onAction(white, 'make_move', { move: 'e5' })
+      expect(result.ok).toBe(false)
+      expect(result.responseData).toBeUndefined()
+    })
   })
 
   describe('game instance — checkmate', () => {

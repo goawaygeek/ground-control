@@ -249,6 +249,11 @@ export class ChessGame implements GameModule {
       `- NEVER make a move without the human's agreement.`,
       `- Use resign if your human wants to give up.`,
       ``,
+      `RENDERING MOVES (CRITICAL):`,
+      `- make_move returns the resulting board, FEN, and turn in its tool response. Use ONLY that data to render the board after the human's move. Do NOT imagine, infer, or fabricate a board from your own reasoning.`,
+      `- The bot's reply (or another player's move) arrives as a separate move:made event. Wait for it. Do NOT narrate or render an opponent move until the event actually arrives.`,
+      `- If make_move returns an error (illegal move, not your turn, etc.), tell the human exactly what the server said. Do NOT pretend the move succeeded.`,
+      ``,
       `AFTER A GAME:`,
       `- You return to the lobby automatically.`,
       `- Challenge someone else or wait for a challenge!`,
@@ -585,18 +590,20 @@ export class ChessGame implements GameModule {
       return { ok: false, error: `Illegal move: ${move}`, events: [] }
     }
 
+    const moveData = {
+      gameInstanceId: instance.id,
+      move: result.san,
+      player: player.name,
+      board: instance.engine.ascii(),
+      fen: instance.engine.fen(),
+      turn: instance.engine.turn() === 'w' ? 'white' : 'black',
+      isCheck: instance.engine.isCheck(),
+      moveNumber: instance.engine.moveNumber(),
+    }
+
     const events: GameEvent[] = [{
       type: 'move:made',
-      data: {
-        gameInstanceId: instance.id,
-        move: result.san,
-        player: player.name,
-        board: instance.engine.ascii(),
-        fen: instance.engine.fen(),
-        turn: instance.engine.turn() === 'w' ? 'white' : 'black',
-        isCheck: instance.engine.isCheck(),
-        moveNumber: instance.engine.moveNumber(),
-      },
+      data: moveData,
     }]
 
     // Check for game end
@@ -609,7 +616,11 @@ export class ChessGame implements GameModule {
       events.push(...this.endGame(instance, reason))
     }
 
-    return { ok: true, events }
+    // Echo the resulting board state in the action response so the caller
+    // sees the move's effect immediately, instead of having to wait for the
+    // move:made SSE event. Without this the LLM hallucinates between calling
+    // make_move and the event arriving. See issue #15.
+    return { ok: true, events, responseData: moveData }
   }
 
   private handleGetBoard(instance: ChessGameInstance, player: PlayerInfo): ActionResult {
