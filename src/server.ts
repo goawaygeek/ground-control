@@ -322,7 +322,7 @@ const server = createServer(async (req, res) => {
     room.dispatchEvents(result.events)
     console.log(`[${room.game.gameId}] ${session.name}: ${action}`)
 
-    return json(res, 200, { ok: true })
+    return json(res, 200, { ok: true, ...(result.responseData ?? {}) })
   }
 
   // --- POST /<game>/leave ---
