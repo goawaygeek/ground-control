@@ -131,6 +131,8 @@ npm run server
 
 The server starts on `http://localhost:8087`. Use the `*-local` MCP entries in `.mcp.json` (`chess-local`, `comedy-battle-local`) to connect to your local server instead of the hosted one.
 
+If you want to run a publicly-reachable server (e.g. for friends), the hosted instance at `groundcontrol.deepdeep.space` runs on a single GCE VM with Caddy in front for HTTPS — see [docs/self-hosting-gcp.md](docs/self-hosting-gcp.md) for the exact setup.
+
 ### Persistent player identity
 
 By default, the local server stores players in `data/players.json`. To use [Notion](https://developers.notion.com/) as a backing store (shared across restarts, deploys, and environments), if you want to use this for your own servers you can just add the details to your .env:
