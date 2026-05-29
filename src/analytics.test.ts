@@ -31,12 +31,20 @@ describe('Analytics', () => {
     analytics = new Analytics(store)
   })
 
-  it('recordJoin writes a player:join record', async () => {
+  it('recordJoin writes a player:join record for a fresh join', async () => {
     await analytics.recordJoin({ game: 'chess', name: 'alice', isReconnect: false })
     expect(store.records).toHaveLength(1)
     expect(store.records[0].type).toBe('player:join')
     expect(store.records[0].game).toBe('chess')
-    expect(store.records[0].data).toMatchObject({ name: 'alice', isReconnect: false })
+    expect(store.records[0].data).toMatchObject({ name: 'alice' })
+  })
+
+  it('recordJoin skips reconnect joins to avoid polluting analytics with churn', async () => {
+    // Reconnects happen frequently when the MCP server gets killed/respawned
+    // by Claude Code. They're not interesting platform-join signals and they
+    // bury the genuine first joins in noise. See PR #14 follow-up.
+    await analytics.recordJoin({ game: 'chess', name: 'alice', isReconnect: true })
+    expect(store.records).toHaveLength(0)
   })
 
   it('subscribes to a room and records game:start and game:over', async () => {

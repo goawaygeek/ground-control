@@ -285,40 +285,43 @@ describe('ChannelClient', () => {
       expect(onEvent.mock.calls.length).toBe(onEventCallsBefore)
     })
 
-    it('auto-rejoins and emits system:session-reset when ping returns 401', async () => {
+    it('auto-rejoins and emits system:session-reset when ping returns 401 after liveness was established', async () => {
       const fetch = vi.fn()
         .mockResolvedValueOnce(mockResponse(200, { token: 'tok-1', name: 'alice' }))
-        // ping → 401
+        // first ping → 200 (establishes liveness)
+        .mockResolvedValueOnce(mockResponse(200))
+        // second ping → 401 (real session loss)
         .mockResolvedValueOnce(mockResponse(401, 'Unauthorized'))
         // recovery join succeeds
         .mockResolvedValueOnce(mockResponse(200, { token: 'tok-1', name: 'alice' }))
 
       const client = new ChannelClient('http://localhost:8087', onEvent, fetch)
       await client.setName('alice')
+      await client.pingOnce() // establishes liveness silently
 
       onEvent.mockClear()
       await client.pingOnce()
 
-      // 3 fetches in this slice: ping, recovery /join. (4 total including setName but
-      // setName fired pre-clear.) We assert by url:
       const urls = fetch.mock.calls.map(c => c[0])
       expect(urls).toContain('http://localhost:8087/ping')
       expect(urls.filter(u => u === 'http://localhost:8087/join').length).toBeGreaterThanOrEqual(1)
 
-      // A system:session-reset event was emitted to the MCP layer
       expect(onEvent).toHaveBeenCalledWith('system:session-reset', expect.any(String))
     })
 
-    it('emits system:session-lost when recovery join also fails', async () => {
+    it('emits system:session-lost when recovery join also fails (after liveness was established)', async () => {
       const fetch = vi.fn()
         .mockResolvedValueOnce(mockResponse(200, { token: 'tok-1', name: 'alice' }))
-        // ping → 401
+        // first ping → 200 (establishes liveness)
+        .mockResolvedValueOnce(mockResponse(200))
+        // second ping → 401
         .mockResolvedValueOnce(mockResponse(401, 'Unauthorized'))
         // recovery join also fails
         .mockResolvedValueOnce(mockResponse(401, { error: 'Invalid token' }))
 
       const client = new ChannelClient('http://localhost:8087', onEvent, fetch)
       await client.setName('alice')
+      await client.pingOnce()
 
       onEvent.mockClear()
       await client.pingOnce()
@@ -350,6 +353,70 @@ describe('ChannelClient', () => {
       // Never called setName
       await client.pingOnce()
       expect(fetch).not.toHaveBeenCalled()
+    })
+
+    // A freshly-spawned MCP server process holds a token from .env but never
+    // saw a successful ping against the current server-side session map. If
+    // the very first ping returns 401, that's a normal startup handshake —
+    // the server didn't restart, this client process did. Don't notify Claude;
+    // just silently rejoin. See PR #14 follow-up.
+    it('does NOT emit a session-reset notification on the very first ping returning 401', async () => {
+      const fetch = vi.fn()
+        .mockResolvedValueOnce(mockResponse(200, { token: 'tok-1', name: 'alice' }))
+        // first ping → 401
+        .mockResolvedValueOnce(mockResponse(401, 'Unauthorized'))
+        // silent recovery /join
+        .mockResolvedValueOnce(mockResponse(200, { token: 'tok-1', name: 'alice' }))
+
+      const client = new ChannelClient('http://localhost:8087', onEvent, fetch)
+      await client.setName('alice')
+      onEvent.mockClear()
+
+      await client.pingOnce()
+
+      expect(onEvent).not.toHaveBeenCalledWith(
+        expect.stringMatching(/^system:/),
+        expect.any(String),
+      )
+    })
+
+    it('DOES emit a session-reset notification on a 401 after a successful prior ping', async () => {
+      const fetch = vi.fn()
+        .mockResolvedValueOnce(mockResponse(200, { token: 'tok-1', name: 'alice' }))
+        // first ping succeeds — establishes liveness in this process
+        .mockResolvedValueOnce(mockResponse(200))
+        // later ping → 401 (server actually lost us)
+        .mockResolvedValueOnce(mockResponse(401, 'Unauthorized'))
+        // recovery /join
+        .mockResolvedValueOnce(mockResponse(200, { token: 'tok-1', name: 'alice' }))
+
+      const client = new ChannelClient('http://localhost:8087', onEvent, fetch)
+      await client.setName('alice')
+      await client.pingOnce()      // 200 — sets the "liveness established" flag
+      onEvent.mockClear()
+      await client.pingOnce()      // 401 — this one IS noteworthy
+
+      expect(onEvent).toHaveBeenCalledWith('system:session-reset', expect.any(String))
+    })
+
+    it('session-reset message does not assert that the server was restarted', async () => {
+      const fetch = vi.fn()
+        .mockResolvedValueOnce(mockResponse(200, { token: 'tok-1', name: 'alice' }))
+        .mockResolvedValueOnce(mockResponse(200))
+        .mockResolvedValueOnce(mockResponse(401, 'Unauthorized'))
+        .mockResolvedValueOnce(mockResponse(200, { token: 'tok-1', name: 'alice' }))
+
+      const client = new ChannelClient('http://localhost:8087', onEvent, fetch)
+      await client.setName('alice')
+      await client.pingOnce()
+      onEvent.mockClear()
+      await client.pingOnce()
+
+      const call = onEvent.mock.calls.find(c => c[0] === 'system:session-reset')!
+      const message = call[1] as string
+      // Should describe what we observed, not a presumed cause.
+      expect(message.toLowerCase()).not.toContain('restart')
+      expect(message.toLowerCase()).not.toContain('server was')
     })
   })
 })

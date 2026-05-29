@@ -17,6 +17,14 @@ export class ChannelClient {
   private fetch: FetchFn
   private persistentToken: string | null = null
   private pingTimer: ReturnType<typeof setInterval> | null = null
+  /**
+   * True once we've observed a successful ping in this process lifetime.
+   * Used to distinguish "the server lost my session" (notify the user) from
+   * "I just spawned and the server doesn't know about me yet" (silent rejoin
+   * — the parent Claude Code may be restarting MCP servers frequently and we
+   * don't want to flood the model with notifications).
+   */
+  private livenessEstablished = false
 
   constructor(
     private serverUrl: string,
@@ -184,19 +192,34 @@ export class ChannelClient {
       return
     }
 
-    if (res.status !== 401) return
+    if (res.status !== 401) {
+      // Any non-401 (200 in practice) means we've successfully proved we exist
+      // to this server's in-memory session map. Mark it so we know future 401s
+      // are a real session loss rather than a fresh-process startup handshake.
+      this.livenessEstablished = true
+      return
+    }
 
+    // 401: silently rejoin via stored token. Whether we notify Claude depends
+    // on whether we had previously established liveness in this process — see
+    // the field comment above.
     const recovered = await this.rejoinWithToken()
+    const shouldNotify = this.livenessEstablished
+
     if (recovered) {
-      this.onEvent(
-        'system:session-reset',
-        'The game server was restarted and lost track of your session. ' +
-        'You have been reconnected automatically. Any game that was in progress is gone.',
-      )
-    } else {
+      this.livenessEstablished = true
+      if (shouldNotify) {
+        this.onEvent(
+          'system:session-reset',
+          'Your session was no longer recognised by the server and has been ' +
+          're-established automatically. Any game in progress is gone; ' +
+          'lobby and analytics state are intact.',
+        )
+      }
+    } else if (shouldNotify) {
       this.onEvent(
         'system:session-lost',
-        'The game server no longer recognises your session and the automatic ' +
+        'Your session was no longer recognised by the server and the automatic ' +
         'reconnect attempt failed. You may need to set_name again to rejoin.',
       )
     }

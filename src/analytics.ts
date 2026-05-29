@@ -12,10 +12,15 @@ export class Analytics {
   constructor(private store: EventStore) {}
 
   async recordJoin(info: { game: string; name: string; isReconnect: boolean }): Promise<void> {
+    // Reconnects flood the analytics DB when Claude Code respawns MCP servers
+    // mid-session — sometimes dozens of times an hour. They aren't a useful
+    // "platform-join" signal and they bury genuine first joins in noise.
+    // Only the first join per token is recorded.
+    if (info.isReconnect) return
     await this.safeLog({
       type: 'player:join',
       game: info.game,
-      data: { name: info.name, isReconnect: info.isReconnect },
+      data: { name: info.name },
     })
   }
 

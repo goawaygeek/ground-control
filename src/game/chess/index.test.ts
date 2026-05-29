@@ -303,7 +303,9 @@ describe('ChessGame', () => {
       expect(data.board).toBeDefined()
       expect(data.turn).toBe('black')
       expect(data.gameInstanceId).toBe(gameInstanceId)
-      expect(data.player).toBe('alice')
+      // `white` may be alice or bob depending on the random color assignment
+      // in accept_challenge — assert the responseData echoes whoever it was.
+      expect(data.player).toBe(white.name)
     })
 
     it('responseData reflects the move applied (not pre-move state)', () => {
