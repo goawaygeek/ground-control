@@ -20,7 +20,7 @@ export class Analytics {
   }
 
   subscribe(room: GameRoom): () => void {
-    return room.onEvent((event) => {
+    const unsubscribeEvents = room.onEvent((event) => {
       if (event.type === 'game:start') {
         this.handleGameStart(event.roomId, event.data as Record<string, unknown>)
       } else if (event.type === 'game:over') {
@@ -29,6 +29,22 @@ export class Analytics {
         this.handlePlayerLeft(event.roomId, event.data as Record<string, unknown>)
       }
     })
+    const unsubscribeTransitions = room.onStateTransition((transition) => {
+      this.safeLog({
+        type: 'state-transition',
+        game: transition.roomId,
+        data: {
+          name: transition.name,
+          from: transition.from,
+          to: transition.to,
+          gameInstanceId: transition.gameInstanceId,
+        },
+      })
+    })
+    return () => {
+      unsubscribeEvents()
+      unsubscribeTransitions()
+    }
   }
 
   private handlePlayerLeft(roomId: string, data: Record<string, unknown>): void {

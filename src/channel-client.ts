@@ -61,7 +61,13 @@ export class ChannelClient {
         body: JSON.stringify(body),
       })
 
-      const data = await res.json() as { token?: string; name?: string; error?: string }
+      const data = await res.json() as {
+        token?: string
+        name?: string
+        error?: string
+        state?: 'connected' | 'lobby' | 'in-game'
+        gameInstanceId?: string
+      }
 
       if (!res.ok) {
         // If token-based join fails, fall back to name-based
@@ -76,7 +82,15 @@ export class ChannelClient {
       this.token = data.token!
       this.connectSSE()
       this.startPinging()
-      return { ok: true, data: { token: this.token, name: this.playerName } as any }
+      return {
+        ok: true,
+        data: {
+          token: this.token,
+          name: this.playerName,
+          state: data.state ?? 'connected',
+          gameInstanceId: data.gameInstanceId,
+        } as any,
+      }
     } catch (err) {
       return { ok: false, error: `Failed to connect: ${err instanceof Error ? err.message : String(err)}` }
     }

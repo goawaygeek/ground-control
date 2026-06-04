@@ -342,7 +342,8 @@ describe('GameRoom', () => {
       const room = new GameRoom(createMockGame())
       const r = await room.sessions.joinPlayer('alice')
       if (!r.ok) throw new Error('join failed')
-      expect(room.sessions.getSessionByToken(r.token)!.state).toBe('lobby')
+      // New sessions land in 'connected' per the new state model.
+      expect(room.sessions.getSessionByToken(r.token)!.state).toBe('connected')
 
       room.dispatchEvents([{
         type: 'game:start',
@@ -401,6 +402,71 @@ describe('GameRoom', () => {
       }])
     })
 
+    it('records _sessionStateGameInstanceId on the session when entering in-game', async () => {
+      const room = new GameRoom(createMockGame())
+      const r = await room.sessions.joinPlayer('alice')
+      if (!r.ok) throw new Error('join failed')
+
+      room.dispatchEvents([{
+        type: 'session:state',
+        data: {},
+        _sessionState: 'in-game',
+        _sessionStateToken: r.token,
+        _sessionStateGameInstanceId: 'game-xyz',
+      }])
+
+      const session = room.sessions.getSessionByToken(r.token)!
+      expect(session.state).toBe('in-game')
+      expect(session.gameInstanceId).toBe('game-xyz')
+    })
+
+    it('clears gameInstanceId when transitioning out of in-game', async () => {
+      const room = new GameRoom(createMockGame())
+      const r = await room.sessions.joinPlayer('alice')
+      if (!r.ok) throw new Error('join failed')
+
+      room.dispatchEvents([{
+        type: 'session:state',
+        data: {},
+        _sessionState: 'in-game',
+        _sessionStateToken: r.token,
+        _sessionStateGameInstanceId: 'game-xyz',
+      }])
+      room.dispatchEvents([{
+        type: 'session:state',
+        data: {},
+        _sessionState: 'connected',
+        _sessionStateToken: r.token,
+      }])
+
+      const session = room.sessions.getSessionByToken(r.token)!
+      expect(session.state).toBe('connected')
+      expect(session.gameInstanceId).toBeUndefined()
+    })
+
+    it('supports transitioning a session to connected via _sessionState', async () => {
+      const room = new GameRoom(createMockGame())
+      const r = await room.sessions.joinPlayer('alice')
+      if (!r.ok) throw new Error('join failed')
+
+      // alice starts in 'connected' per the new model
+      room.dispatchEvents([{
+        type: 'session:state',
+        data: {},
+        _sessionState: 'lobby',
+        _sessionStateToken: r.token,
+      }])
+      expect(room.sessions.getSessionByToken(r.token)!.state).toBe('lobby')
+
+      room.dispatchEvents([{
+        type: 'session:state',
+        data: {},
+        _sessionState: 'connected',
+        _sessionStateToken: r.token,
+      }])
+      expect(room.sessions.getSessionByToken(r.token)!.state).toBe('connected')
+    })
+
     it('events of type session:state are applied but not broadcast', async () => {
       const room = new GameRoom(createMockGame())
       const r = await room.sessions.joinPlayer('alice')
@@ -422,6 +488,88 @@ describe('GameRoom', () => {
       // But neither broadcast nor surfaced to listeners
       expect(res.write).not.toHaveBeenCalled()
       expect(listener).not.toHaveBeenCalled()
+    })
+  })
+
+  describe('handleEnterLobby', () => {
+    it('transitions a connected session to lobby and calls game.onPlayerJoin', async () => {
+      const mockGame = createMockGame()
+      ;(mockGame.onPlayerJoin as any).mockReturnValue([{ type: 'player:joined', data: {} }])
+      const room = new GameRoom(mockGame)
+      const r = await room.sessions.joinPlayer('alice')
+      if (!r.ok) throw new Error('join failed')
+      expect(room.sessions.getSessionByToken(r.token)!.state).toBe('connected')
+
+      const result = room.handleEnterLobby({ name: 'alice', token: r.token, role: 'audience' })
+      expect(result.ok).toBe(true)
+      expect(mockGame.onPlayerJoin).toHaveBeenCalled()
+      expect(room.sessions.getSessionByToken(r.token)!.state).toBe('lobby')
+    })
+
+    it('is a no-op (ok) when the session is already in the lobby', async () => {
+      const mockGame = createMockGame()
+      const room = new GameRoom(mockGame)
+      const r = await room.sessions.joinPlayer('alice')
+      if (!r.ok) throw new Error('join failed')
+
+      room.handleEnterLobby({ name: 'alice', token: r.token, role: 'audience' })
+      ;(mockGame.onPlayerJoin as any).mockClear()
+
+      const result = room.handleEnterLobby({ name: 'alice', token: r.token, role: 'audience' })
+      expect(result.ok).toBe(true)
+      expect(mockGame.onPlayerJoin).not.toHaveBeenCalled()
+    })
+
+    it('rejects when the session is in-game', async () => {
+      const room = new GameRoom(createMockGame())
+      const r = await room.sessions.joinPlayer('alice')
+      if (!r.ok) throw new Error('join failed')
+      room.sessions.setSessionState(r.token, 'in-game', 'g1')
+
+      const result = room.handleEnterLobby({ name: 'alice', token: r.token, role: 'audience' })
+      expect(result.ok).toBe(false)
+      expect(result.error).toMatch(/in a game/i)
+    })
+  })
+
+  describe('handleLeaveLobby', () => {
+    it('transitions a lobby session back to connected and calls game.onPlayerLeave with reason "left_lobby"', async () => {
+      const mockGame = createMockGame()
+      ;(mockGame.onPlayerLeave as any).mockReturnValue([{ type: 'player:left', data: {} }])
+      const room = new GameRoom(mockGame)
+      const r = await room.sessions.joinPlayer('alice')
+      if (!r.ok) throw new Error('join failed')
+      room.handleEnterLobby({ name: 'alice', token: r.token, role: 'audience' })
+      ;(mockGame.onPlayerLeave as any).mockClear()
+
+      const result = room.handleLeaveLobby({ name: 'alice', token: r.token, role: 'audience' })
+      expect(result.ok).toBe(true)
+      expect(mockGame.onPlayerLeave).toHaveBeenCalledWith(
+        expect.objectContaining({ name: 'alice' }),
+        'left_lobby',
+      )
+      expect(room.sessions.getSessionByToken(r.token)!.state).toBe('connected')
+    })
+
+    it('is a no-op (ok) when the session is in connected state', async () => {
+      const mockGame = createMockGame()
+      const room = new GameRoom(mockGame)
+      const r = await room.sessions.joinPlayer('alice')
+      if (!r.ok) throw new Error('join failed')
+
+      const result = room.handleLeaveLobby({ name: 'alice', token: r.token, role: 'audience' })
+      expect(result.ok).toBe(true)
+      expect(mockGame.onPlayerLeave).not.toHaveBeenCalled()
+    })
+
+    it('rejects when the session is in-game', async () => {
+      const room = new GameRoom(createMockGame())
+      const r = await room.sessions.joinPlayer('alice')
+      if (!r.ok) throw new Error('join failed')
+      room.sessions.setSessionState(r.token, 'in-game', 'g1')
+
+      const result = room.handleLeaveLobby({ name: 'alice', token: r.token, role: 'audience' })
+      expect(result.ok).toBe(false)
     })
   })
 

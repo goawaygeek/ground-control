@@ -303,7 +303,9 @@ describe('ChessGame', () => {
       expect(data.board).toBeDefined()
       expect(data.turn).toBe('black')
       expect(data.gameInstanceId).toBe(gameInstanceId)
-      expect(data.player).toBe('alice')
+      // `white` may be alice or bob depending on the random color assignment
+      // in accept_challenge — assert the responseData echoes whoever it was.
+      expect(data.player).toBe(white.name)
     })
 
     it('responseData reflects the move applied (not pre-move state)', () => {
@@ -321,7 +323,7 @@ describe('ChessGame', () => {
   })
 
   describe('game instance — checkmate', () => {
-    it('detects checkmate (fool\'s mate) and returns players to lobby', () => {
+    it('detects checkmate (fool\'s mate) and ends the game (players land in connected)', () => {
       const alice = makePlayer('alice')
       const bob = makePlayer('bob')
       game.onPlayerJoin(alice)
@@ -347,11 +349,19 @@ describe('ChessGame', () => {
       const gameOver = result.events.find(e => e.type === 'game:over')!
       expect((gameOver.data as any).reason).toBe('checkmate')
 
-      // Both players should be back in lobby
+      // Per the new state model: players land in 'connected' after game-end,
+      // not back in the lobby. They'd call enter_lobby again to rejoin.
       const state = game.getState() as any
-      expect(state.lobbyPlayers).toContain('alice')
-      expect(state.lobbyPlayers).toContain('bob')
+      expect(state.lobbyPlayers).not.toContain('alice')
+      expect(state.lobbyPlayers).not.toContain('bob')
       expect(state.activeGames).toHaveLength(0)
+
+      // The session:state events should target both players as 'connected'.
+      const stateEvents = result.events.filter(e => e.type === 'session:state')
+      expect(stateEvents).toHaveLength(2)
+      for (const ev of stateEvents) {
+        expect((ev as any)._sessionState).toBe('connected')
+      }
     })
   })
 
@@ -374,10 +384,10 @@ describe('ChessGame', () => {
       expect((gameOver.data as any).reason).toBe('resign')
       expect((gameOver.data as any).winner).toBe('bob')
 
-      // Both back in lobby
+      // Per the new state model, both go to 'connected' on game-end.
       const state = game.getState() as any
-      expect(state.lobbyPlayers).toContain('alice')
-      expect(state.lobbyPlayers).toContain('bob')
+      expect(state.lobbyPlayers).not.toContain('alice')
+      expect(state.lobbyPlayers).not.toContain('bob')
     })
 
     it('rejects resign if not in a game', () => {
@@ -405,9 +415,10 @@ describe('ChessGame', () => {
       expect((gameOver.data as any).reason).toBe('forfeit')
       expect((gameOver.data as any).winner).toBe('bob')
 
-      // Bob should be back in lobby
+      // Per the new state model, Bob goes back to 'connected' (not lobby)
+      // after his game forfeits. He'd call enter_lobby again to re-list.
       const state = game.getState() as any
-      expect(state.lobbyPlayers).toContain('bob')
+      expect(state.lobbyPlayers).not.toContain('bob')
       expect(state.lobbyPlayers).not.toContain('alice')
     })
   })
@@ -494,11 +505,12 @@ describe('ChessGame', () => {
       // Alice resigns game 1
       game.onAction(alice, 'resign', {})
 
-      // Game 2 should still be active
+      // Game 2 should still be active. Per the new model alice and bob go to
+      // 'connected' (not lobby) when game 1 ends.
       const state = game.getState() as any
       expect(state.activeGames).toHaveLength(1)
-      expect(state.lobbyPlayers).toContain('alice')
-      expect(state.lobbyPlayers).toContain('bob')
+      expect(state.lobbyPlayers).not.toContain('alice')
+      expect(state.lobbyPlayers).not.toContain('bob')
     })
   })
 
@@ -674,12 +686,14 @@ describe('ChessGame', () => {
       expect((stateEvents[0] as any)._sessionStateToken).toBe(alice.token)
     })
 
-    it('emits a session:state lobby event on game end (resign)', () => {
+    it('emits a session:state connected event on game end (resign)', () => {
       game.onAction(alice, 'play_bot', {})
       const resignResult = game.onAction(alice, 'resign', {})
       const stateEvents = resignResult.events.filter(e => e.type === 'session:state')
+      // Per the new state model: humans return to 'connected' after game-end,
+      // not 'lobby'. They opt back into the lobby explicitly via enter_lobby.
       expect(stateEvents).toHaveLength(1)
-      expect((stateEvents[0] as any)._sessionState).toBe('lobby')
+      expect((stateEvents[0] as any)._sessionState).toBe('connected')
       expect((stateEvents[0] as any)._sessionStateToken).toBe(alice.token)
     })
 

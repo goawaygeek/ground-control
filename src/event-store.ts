@@ -3,7 +3,12 @@ import { appendFileSync, mkdirSync, readFileSync } from 'node:fs'
 import { dirname } from 'node:path'
 import { Client } from '@notionhq/client'
 
-export type AnalyticsEventType = 'player:join' | 'player:left' | 'game:start' | 'game:over'
+export type AnalyticsEventType =
+  | 'player:join'
+  | 'player:left'
+  | 'game:start'
+  | 'game:over'
+  | 'state-transition'
 
 export interface AnalyticsRecord {
   id: string
