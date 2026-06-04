@@ -133,6 +133,52 @@ describe('Analytics', () => {
     expect(store.records.length).toBe(0)
   })
 
+  describe('state transitions', () => {
+    it('records a state-transition event when a session moves from connected to lobby', async () => {
+      const room = new GameRoom(new ChessGame())
+      analytics.subscribe(room)
+
+      const alice = await room.sessions.joinPlayer('alice')
+      if (!alice.ok) throw new Error('join failed')
+
+      // Drive a transition via the room's enter_lobby handler.
+      room.handleEnterLobby({ name: 'alice', token: alice.token, role: 'audience' })
+
+      const transitions = store.records.filter(r => r.type === 'state-transition')
+      expect(transitions).toHaveLength(1)
+      expect(transitions[0].data).toMatchObject({
+        name: 'alice',
+        from: 'connected',
+        to: 'lobby',
+      })
+    })
+
+    it('records a state-transition for connected → in-game when play_bot is called', async () => {
+      const room = new GameRoom(new ChessGame())
+      analytics.subscribe(room)
+
+      const alice = await room.sessions.joinPlayer('alice')
+      if (!alice.ok) throw new Error('join failed')
+
+      const playResult = room.game.onAction(
+        { name: 'alice', token: alice.token, role: 'audience', state: 'connected' },
+        'play_bot',
+        {},
+      )
+      room.dispatchEvents(playResult.events)
+
+      const transitions = store.records.filter(r => r.type === 'state-transition')
+      // Just one: connected → in-game (no separate from-lobby step since alice never entered the lobby).
+      expect(transitions).toHaveLength(1)
+      expect(transitions[0].data).toMatchObject({
+        name: 'alice',
+        from: 'connected',
+        to: 'in-game',
+      })
+      expect(transitions[0].data.gameInstanceId).toBeDefined()
+    })
+  })
+
   describe('player:left handling', () => {
     it('records a player:left event with the reason passed by the game module', async () => {
       const room = new GameRoom(new ChessGame())

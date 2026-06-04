@@ -2,7 +2,7 @@ import { IncomingMessage, ServerResponse } from 'node:http'
 import { randomUUID } from 'node:crypto'
 import type { PlayerStore } from './store.js'
 
-export type SessionState = 'lobby' | 'in-game'
+export type SessionState = 'connected' | 'lobby' | 'in-game'
 
 export interface PlayerSession {
   name: string
@@ -13,11 +13,16 @@ export interface PlayerSession {
   /** Timestamp of last client liveness signal (SSE connect or /ping). */
   lastPingAt: number
   /**
-   * Lobby vs in-game. In-game sessions are exempt from the liveness sweep
-   * because their opponent's interest in the game is reason enough to keep
-   * the session alive — see issue #8.
+   * Per docs/player-state.md:
+   *   - 'connected': authenticated, on the server, not in any lobby roster.
+   *     Reapable.
+   *   - 'lobby': in the lobby roster, challengeable. Reapable.
+   *   - 'in-game': actively in a game (id in gameInstanceId). Exempt from
+   *     the liveness sweep (issue #8).
    */
   state: SessionState
+  /** Set when state === 'in-game'; cleared on transition out. */
+  gameInstanceId?: string
 }
 
 export type JoinResult = { ok: true; token: string; name: string; isReconnect: boolean } | { ok: false; error: string }
@@ -98,7 +103,7 @@ export class SessionManager {
       sseClients: new Set(),
       disconnectTimer: null,
       lastPingAt: Date.now(),
-      state: 'lobby',
+      state: 'connected',
     }
     this.sessions.set(token, session)
     this.nameToToken.set(record.name, token)
@@ -114,7 +119,7 @@ export class SessionManager {
       sseClients: new Set(),
       disconnectTimer: null,
       lastPingAt: Date.now(),
-      state: 'lobby',
+      state: 'connected',
     }
     this.sessions.set(token, session)
     this.nameToToken.set(name, token)
@@ -192,25 +197,46 @@ export class SessionManager {
     if (session) session.role = role
   }
 
-  setSessionState(token: string, state: SessionState): void {
+  /**
+   * Transition a session to a new state. When entering 'in-game', the caller
+   * MUST pass a gameInstanceId. When leaving 'in-game', the id is cleared.
+   * For 'connected' or 'lobby' transitions, gameInstanceId is ignored (and
+   * cleared if it was set).
+   */
+  setSessionState(token: string, state: SessionState, gameInstanceId?: string): void {
     const session = this.sessions.get(token)
-    if (session) session.state = state
+    if (!session) return
+    session.state = state
+    if (state === 'in-game') {
+      session.gameInstanceId = gameInstanceId
+    } else {
+      session.gameInstanceId = undefined
+    }
   }
 
   /**
    * Returns sessions that should be cleaned up by the liveness sweep:
-   * lobby sessions whose lastPingAt is older than the timeout. In-game
-   * sessions are exempt — see issue #8.
+   * non-'in-game' sessions whose lastPingAt is older than the timeout.
+   * In-game sessions are exempt — see issue #8 and docs/player-state.md.
    */
   getSessionsToReap(now: number, timeoutMs: number): PlayerSession[] {
     const stale: PlayerSession[] = []
     for (const session of this.sessions.values()) {
-      if (session.state !== 'lobby') continue
+      if (session.state === 'in-game') continue
       if (now - session.lastPingAt > timeoutMs) {
         stale.push(session)
       }
     }
     return stale
+  }
+
+  /** Per-state count, used by /stats. */
+  getSessionCountsByState(): Record<SessionState, number> {
+    const counts: Record<SessionState, number> = { connected: 0, lobby: 0, 'in-game': 0 }
+    for (const session of this.sessions.values()) {
+      counts[session.state]++
+    }
+    return counts
   }
 }
 

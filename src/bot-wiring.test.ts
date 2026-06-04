@@ -67,9 +67,10 @@ describe('ChessBotRunner end-to-end', () => {
 
     expect(gameOver).toBe(true)
     expect(eventStream).toContain('game:over')
-    // After the game ends, alice should be back in the lobby.
+    // After the game ends, per the new state model alice goes to 'connected'
+    // (not lobby). She'd call enter_lobby explicitly to rejoin the lobby.
     const state = room.game.getState() as any
-    expect(state.lobbyPlayers).toContain('alice')
+    expect(state.lobbyPlayers).not.toContain('alice')
     expect(state.lobbyPlayers).not.toContain(CHESS_BOT_NAME)
     expect(state.activeGames).toHaveLength(0)
   })

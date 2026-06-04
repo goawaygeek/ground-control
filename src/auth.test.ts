@@ -120,24 +120,37 @@ describe('SessionManager', () => {
     })
   })
 
-  describe('session state (lobby vs in-game)', () => {
-    it('new sessions start in the lobby', async () => {
+  describe('session state (connected / lobby / in-game)', () => {
+    it('new sessions start in the connected state, not lobby (per spec)', async () => {
       const sm = new SessionManager()
       const r = await sm.joinPlayer('alice')
       if (!r.ok) throw new Error('join failed')
-      expect(sm.getSessionByToken(r.token)!.state).toBe('lobby')
+      expect(sm.getSessionByToken(r.token)!.state).toBe('connected')
     })
 
-    it('setSessionState transitions between lobby and in-game', async () => {
+    it('new sessions have no gameInstanceId until they enter a game', async () => {
       const sm = new SessionManager()
       const r = await sm.joinPlayer('alice')
       if (!r.ok) throw new Error('join failed')
+      expect(sm.getSessionByToken(r.token)!.gameInstanceId).toBeUndefined()
+    })
 
-      sm.setSessionState(r.token, 'in-game')
-      expect(sm.getSessionByToken(r.token)!.state).toBe('in-game')
+    it('setSessionState transitions through connected → lobby → in-game → connected', async () => {
+      const sm = new SessionManager()
+      const r = await sm.joinPlayer('alice')
+      if (!r.ok) throw new Error('join failed')
 
       sm.setSessionState(r.token, 'lobby')
       expect(sm.getSessionByToken(r.token)!.state).toBe('lobby')
+
+      sm.setSessionState(r.token, 'in-game', 'game-abc')
+      expect(sm.getSessionByToken(r.token)!.state).toBe('in-game')
+      expect(sm.getSessionByToken(r.token)!.gameInstanceId).toBe('game-abc')
+
+      sm.setSessionState(r.token, 'connected')
+      expect(sm.getSessionByToken(r.token)!.state).toBe('connected')
+      // gameInstanceId is cleared when transitioning out of in-game
+      expect(sm.getSessionByToken(r.token)!.gameInstanceId).toBeUndefined()
     })
 
     it('setSessionState is a no-op for unknown tokens', () => {
@@ -148,10 +161,11 @@ describe('SessionManager', () => {
   })
 
   describe('getSessionsToReap', () => {
-    it('returns lobby sessions whose lastPingAt is older than the timeout', async () => {
+    it('reaps connected sessions whose lastPingAt is older than the timeout', async () => {
       const sm = new SessionManager()
       const r = await sm.joinPlayer('alice')
       if (!r.ok) throw new Error('join failed')
+      // Default state is 'connected' per the new model.
 
       const session = sm.getSessionByToken(r.token)!
       session.lastPingAt = 1000
@@ -160,13 +174,24 @@ describe('SessionManager', () => {
       expect(toReap.map(s => s.name)).toEqual(['alice'])
     })
 
-    it('does NOT reap lobby sessions whose lastPingAt is within the timeout', async () => {
+    it('reaps lobby sessions whose lastPingAt is older than the timeout', async () => {
       const sm = new SessionManager()
       const r = await sm.joinPlayer('alice')
       if (!r.ok) throw new Error('join failed')
 
-      const session = sm.getSessionByToken(r.token)!
-      session.lastPingAt = 50_000
+      sm.setSessionState(r.token, 'lobby')
+      sm.getSessionByToken(r.token)!.lastPingAt = 1000
+
+      const toReap = sm.getSessionsToReap(100_000, 90_000)
+      expect(toReap.map(s => s.name)).toEqual(['alice'])
+    })
+
+    it('does NOT reap sessions whose lastPingAt is within the timeout', async () => {
+      const sm = new SessionManager()
+      const r = await sm.joinPlayer('alice')
+      if (!r.ok) throw new Error('join failed')
+
+      sm.getSessionByToken(r.token)!.lastPingAt = 50_000
 
       const toReap = sm.getSessionsToReap(100_000, 90_000)
       expect(toReap).toHaveLength(0)
@@ -177,30 +202,28 @@ describe('SessionManager', () => {
       const r = await sm.joinPlayer('alice')
       if (!r.ok) throw new Error('join failed')
 
-      const session = sm.getSessionByToken(r.token)!
-      session.lastPingAt = 0           // Ancient
-      sm.setSessionState(r.token, 'in-game')
+      sm.setSessionState(r.token, 'in-game', 'game-abc')
+      sm.getSessionByToken(r.token)!.lastPingAt = 0
 
       const toReap = sm.getSessionsToReap(100_000, 90_000)
       expect(toReap).toHaveLength(0)
     })
 
-    it('reaps a player who returned to the lobby after a game and went silent', async () => {
+    it('reaps a player who returned to connected after a game and went silent', async () => {
       const sm = new SessionManager()
       const r = await sm.joinPlayer('alice')
       if (!r.ok) throw new Error('join failed')
 
-      sm.setSessionState(r.token, 'in-game')
-      // Player goes silent during the game (but is protected by in-game state).
+      sm.setSessionState(r.token, 'in-game', 'game-abc')
       sm.getSessionByToken(r.token)!.lastPingAt = 0
       expect(sm.getSessionsToReap(100_000, 90_000)).toHaveLength(0)
 
-      // Game ends — back to lobby.
-      sm.setSessionState(r.token, 'lobby')
+      // Game ends — back to connected.
+      sm.setSessionState(r.token, 'connected')
       expect(sm.getSessionsToReap(100_000, 90_000).map(s => s.name)).toEqual(['alice'])
     })
 
-    it('returns multiple sessions when several are stale and in the lobby', async () => {
+    it('returns multiple sessions when several are stale (connected or lobby)', async () => {
       const sm = new SessionManager()
       for (const name of ['a', 'b', 'c']) {
         const r = await sm.joinPlayer(name)
@@ -209,6 +232,32 @@ describe('SessionManager', () => {
       }
       const toReap = sm.getSessionsToReap(100_000, 90_000)
       expect(toReap.map(s => s.name).sort()).toEqual(['a', 'b', 'c'])
+    })
+  })
+
+  describe('getSessionCountsByState', () => {
+    it('reports zero counts when no sessions exist', () => {
+      const sm = new SessionManager()
+      expect(sm.getSessionCountsByState()).toEqual({ connected: 0, lobby: 0, 'in-game': 0 })
+    })
+
+    it('counts each session in its current state', async () => {
+      const sm = new SessionManager()
+      const a = await sm.joinPlayer('a'); if (!a.ok) throw new Error('a')
+      const b = await sm.joinPlayer('b'); if (!b.ok) throw new Error('b')
+      const c = await sm.joinPlayer('c'); if (!c.ok) throw new Error('c')
+      const d = await sm.joinPlayer('d'); if (!d.ok) throw new Error('d')
+
+      // a: stays connected
+      sm.setSessionState(b.token, 'lobby')
+      sm.setSessionState(c.token, 'lobby')
+      sm.setSessionState(d.token, 'in-game', 'g1')
+
+      expect(sm.getSessionCountsByState()).toEqual({
+        connected: 1,
+        lobby: 2,
+        'in-game': 1,
+      })
     })
   })
 

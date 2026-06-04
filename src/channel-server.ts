@@ -88,6 +88,22 @@ const universalTools = [
       required: ['message'],
     },
   },
+  {
+    name: 'enter_lobby',
+    description: 'Join the lobby so other players can see you and challenge you. By default a fresh connection is NOT in the lobby — call this to opt in. No-op if already in the lobby.',
+    inputSchema: {
+      type: 'object' as const,
+      properties: {},
+    },
+  },
+  {
+    name: 'leave_lobby',
+    description: 'Step out of the lobby without disconnecting from the server. You stay connected and can still play a bot, but other players can no longer see or challenge you. No-op if not in the lobby. Rejected if you are in a game.',
+    inputSchema: {
+      type: 'object' as const,
+      properties: {},
+    },
+  },
 ]
 
 const onboardingPreamble = persistentToken
@@ -134,7 +150,18 @@ mcp.setRequestHandler(CallToolRequestSchema, async (req) => {
     if (persistentToken && !trimmedName) {
       const result = await client.setName('')  // Empty name triggers token-based join
       if (result.ok) {
-        const lines = [`Reconnected as "${client.getPlayerName()}"! Waiting for game events...`]
+        const data = (result as { ok: true; data?: Record<string, unknown> }).data ?? {}
+        const state = data.state as string | undefined
+        const lines = [`Reconnected as "${client.getPlayerName()}"!`]
+        if (state === 'in-game') {
+          lines.push('')
+          lines.push('You are in an active game. Call get_board to see the current position before suggesting any moves.')
+        } else if (state === 'lobby') {
+          lines.push('You are in the lobby — other players can see and challenge you. Call get_lobby to see what is going on.')
+        } else {
+          lines.push('You are connected but not yet in the lobby or a game.')
+          lines.push('Ask your human: would they like to enter the lobby (look for human opponents) or play a bot (play_bot)?')
+        }
         return textResult(lines.join('\n'))
       }
       // Token reconnect failed — likely the token is stale or no longer in Notion
@@ -156,8 +183,12 @@ mcp.setRequestHandler(CallToolRequestSchema, async (req) => {
     }
     const result = await client.setName(trimmedName)
     if (result.ok) {
-      const token = (result as { ok: true; data?: Record<string, unknown> }).data?.token as string | undefined
-      const lines = [`Joined the game as "${client.getPlayerName()}"! Waiting for game events...`]
+      const data = (result as { ok: true; data?: Record<string, unknown> }).data ?? {}
+      const token = data.token as string | undefined
+      const lines = [`Joined the game as "${client.getPlayerName()}"!`]
+      lines.push('')
+      lines.push('You are connected to the server but not yet in the lobby or a game.')
+      lines.push('Ask your human: would they like to enter the lobby (look for human opponents — call enter_lobby) or play a bot (call play_bot)?')
       if (token && !persistentToken) {
         lines.push('')
         lines.push('=== PLAYER TOKEN — SHOW THIS TO THE USER ===')
@@ -211,6 +242,16 @@ mcp.setRequestHandler(CallToolRequestSchema, async (req) => {
     const result = await client.action('send_message', { message })
     if (!result.ok) return textResult(`Error: ${result.error}`)
     return textResult('Message sent!')
+  }
+
+  // Universal: enter_lobby / leave_lobby (handled at the GameRoom layer)
+  if (req.params.name === 'enter_lobby' || req.params.name === 'leave_lobby') {
+    const result = await client.action(req.params.name, {})
+    if (!result.ok) return textResult(`Error: ${result.error}`)
+    return textResult(req.params.name === 'enter_lobby'
+      ? 'You are now in the lobby. Other players can see and challenge you.'
+      : 'You have left the lobby and are now in connected state.'
+    )
   }
 
   // Game-specific: start_round is handled specially (its own endpoint)

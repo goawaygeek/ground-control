@@ -134,12 +134,22 @@ const server = createServer(async (req, res) => {
   }
 
   // --- GET /stats (aggregated live counters for the landing page) ---
+  // Reports lobby and in-game counts separately per docs/player-state.md.
+  // 'connected' players are private — not surfaced on the public landing page.
   if (req.method === 'GET' && url.pathname === '/stats') {
-    const games = getAvailableGames().map(id => ({
-      id,
-      phase: rooms.get(id)!.game.getPhase(),
-      players: rooms.get(id)!.sessions.getActiveSessions().length,
-    }))
+    const games = getAvailableGames().map(id => {
+      const room = rooms.get(id)!
+      const counts = room.sessions.getSessionCountsByState()
+      return {
+        id,
+        phase: room.game.getPhase(),
+        // Legacy: total session count (preserved for old landing page polls).
+        players: counts.connected + counts.lobby + counts['in-game'],
+        // New fields per the state model:
+        lobby: counts.lobby,
+        inGame: counts['in-game'],
+      }
+    })
     return json(res, 200, { games })
   }
 
@@ -181,9 +191,10 @@ const server = createServer(async (req, res) => {
 
     console.log(`[${room.game.gameId}] ${result.name} joined${result.isReconnect ? ' (reconnect)' : ''} — token: ${result.token.slice(0, 8)}...`)
 
+    // Fresh sessions land in 'connected' state per docs/player-state.md.
+    // Reconnects preserve whatever state they had — including 'in-game' so a
+    // mid-game reconnect lands the player back in their existing game.
     const session = room.sessions.getSessionByToken(result.token)!
-    const events = room.game.onPlayerJoin({ name: session.name, token: session.token, role: session.role })
-    room.dispatchEvents(events)
 
     analytics.recordJoin({
       game: room.game.gameId,
@@ -191,7 +202,12 @@ const server = createServer(async (req, res) => {
       isReconnect: result.isReconnect,
     })
 
-    return json(res, 200, { token: result.token, name: result.name })
+    return json(res, 200, {
+      token: result.token,
+      name: result.name,
+      state: session.state,
+      gameInstanceId: session.gameInstanceId,
+    })
   }
 
   // --- GET /<game>/events?token=<token> (Player SSE) ---
@@ -253,11 +269,15 @@ const server = createServer(async (req, res) => {
     const session = room.sessions.authenticate(req)
     if (!session) return json(res, 401, { error: 'Unauthorized' })
 
-    const players = room.sessions.getActiveSessions().map(s => ({
-      name: s.name,
-      token: s.token,
-      role: s.role,
-    }))
+    // Only lobby-state players are eligible to compete. Connected sessions
+    // haven't opted in.
+    const players = room.sessions.getActiveSessions()
+      .filter(s => s.state === 'lobby')
+      .map(s => ({
+        name: s.name,
+        token: s.token,
+        role: s.role,
+      }))
 
     if (!room.game.canStartGame(players)) {
       return json(res, 400, { error: `Cannot start game (phase: ${room.game.getPhase()}, players: ${players.length})` })
@@ -309,8 +329,32 @@ const server = createServer(async (req, res) => {
       return json(res, 200, { ok: true })
     }
 
+    if (action === 'enter_lobby') {
+      const enterResult = room.handleEnterLobby(
+        { name: session.name, token: session.token, role: session.role },
+      )
+      if (!enterResult.ok) return json(res, 400, { error: enterResult.error })
+      console.log(`[${room.game.gameId}] ${session.name}: enter_lobby`)
+      return json(res, 200, { ok: true })
+    }
+
+    if (action === 'leave_lobby') {
+      const leaveResult = room.handleLeaveLobby(
+        { name: session.name, token: session.token, role: session.role },
+      )
+      if (!leaveResult.ok) return json(res, 400, { error: leaveResult.error })
+      console.log(`[${room.game.gameId}] ${session.name}: leave_lobby`)
+      return json(res, 200, { ok: true })
+    }
+
     const result = room.game.onAction(
-      { name: session.name, token: session.token, role: session.role },
+      {
+        name: session.name,
+        token: session.token,
+        role: session.role,
+        state: session.state,
+        gameInstanceId: session.gameInstanceId,
+      },
       action,
       data,
     )

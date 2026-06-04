@@ -22,10 +22,6 @@ interface ChessGameInstance {
   blackPlayer: PlayerInfo
 }
 
-type PlayerState =
-  | { status: 'lobby' }
-  | { status: 'playing'; gameInstanceId: string }
-
 export const CHESS_BOT_NAME = 'chessbot'
 
 export class ChessGame implements GameModule {
@@ -33,7 +29,15 @@ export class ChessGame implements GameModule {
 
   private instances = new Map<string, ChessGameInstance>()
   private challenges = new Map<string, Challenge>()
-  private playerStates = new Map<string, PlayerState>() // keyed by token
+  /**
+   * Token → gameInstanceId for any player currently in a game (humans + bots).
+   * Replaces the old playerStates map. For human players this duplicates
+   * session.gameInstanceId, but we still need the map because (a) the
+   * server-side bot has no session, (b) we need to look up the opponent's
+   * in-game status without holding a session manager reference. See
+   * docs/player-state.md.
+   */
+  private inGameInstances = new Map<string, string>()
   private playersByToken = new Map<string, PlayerInfo>()
   private botTokens = new Set<string>()
 
@@ -60,8 +64,12 @@ export class ChessGame implements GameModule {
     }
   }
 
+  /**
+   * Called by GameRoom.handleEnterLobby (NOT by HTTP /join — per the new state
+   * model, joining the server is separate from joining the lobby). Adds the
+   * player to the lobby roster.
+   */
   onPlayerJoin(player: PlayerInfo): GameEvent[] {
-    this.playerStates.set(player.token, { status: 'lobby' })
     this.playersByToken.set(player.token, player)
     return [
       { type: 'player:joined', data: { name: player.name } },
@@ -69,16 +77,21 @@ export class ChessGame implements GameModule {
     ]
   }
 
+  /**
+   * Called when a player leaves — either by leaving the lobby (reason
+   * 'left_lobby') or by disconnecting from the server entirely (other reasons).
+   */
   onPlayerLeave(player: PlayerInfo, reason: LeaveReason): GameEvent[] {
     const events: GameEvent[] = [
       { type: 'player:left', data: { name: player.name, reason } },
     ]
 
-    const state = this.playerStates.get(player.token)
-
-    // If player is in a game, forfeit it
-    if (state?.status === 'playing') {
-      const instance = this.instances.get(state.gameInstanceId)
+    // If they're in a game, forfeit it (unless they're just leaving the lobby —
+    // by definition they can't be in a game in that case, since handleLeaveLobby
+    // rejects mid-game leaves).
+    const gameInstanceId = this.inGameInstances.get(player.token)
+    if (gameInstanceId) {
+      const instance = this.instances.get(gameInstanceId)
       if (instance) {
         const opponent = instance.whitePlayer.token === player.token
           ? instance.blackPlayer
@@ -87,7 +100,7 @@ export class ChessGame implements GameModule {
       }
     }
 
-    // Cancel any challenges involving this player
+    // Cancel any challenges involving this player.
     for (const [id, challenge] of this.challenges) {
       if (challenge.challenger.token === player.token || challenge.opponent.token === player.token) {
         this.challenges.delete(id)
@@ -102,7 +115,6 @@ export class ChessGame implements GameModule {
       }
     }
 
-    this.playerStates.delete(player.token)
     this.playersByToken.delete(player.token)
     events.push({ type: 'lobby:update', data: this.getLobbyData() })
     return events
@@ -231,15 +243,22 @@ export class ChessGame implements GameModule {
     return [
       `You are playing Chess as a coach/advisor for your human partner.`,
       ``,
-      `LOBBY:`,
-      `- When you first join, you're in the lobby. Use get_lobby to see who's around.`,
-      `- To play another human, use the challenge tool with their name.`,
-      `- If someone challenges you, you'll receive a challenge:received event.`,
-      `  Discuss with your human and use accept_challenge or decline_challenge.`,
+      `JOINING:`,
+      `- When you first connect, you are NOT in the lobby yet. You're just connected to the server.`,
+      `- Ask the human: do they want to play another human (call enter_lobby first, then challenge or wait for challenges) or play the server bot (call play_bot immediately)?`,
+      `- You can call get_lobby at any time to see who's in the lobby and if anyone is around.`,
+      ``,
+      `LOBBY (after enter_lobby):`,
+      `- Once in the lobby, you're visible to other players and challengeable.`,
+      `- To play a human, use the challenge tool with their name.`,
+      `- If someone challenges you, you'll receive a challenge:received event. Discuss with your human and use accept_challenge or decline_challenge.`,
       `- Once a challenge is accepted, the game starts automatically.`,
-      `- If the lobby is empty and your human wants to play immediately, offer them`,
-      `  a match against the server bot using the play_bot tool. Mention that they`,
-      `  can call play_bot again any time. Do not surface the bot as a lobby player.`,
+      `- If you want to step out of the lobby without leaving the server, call leave_lobby.`,
+      ``,
+      `PLAYING A BOT:`,
+      `- play_bot starts a game immediately against the server bot. Works whether or not you've entered the lobby.`,
+      `- Do not surface the bot as a lobby player; the bot only appears as your opponent in active games.`,
+      `- Mention that the human can call play_bot again any time.`,
       ``,
       `DURING A GAME:`,
       `- Use get_board to see the position and legal moves.`,
@@ -255,8 +274,8 @@ export class ChessGame implements GameModule {
       `- If make_move returns an error (illegal move, not your turn, etc.), tell the human exactly what the server said. Do NOT pretend the move succeeded.`,
       ``,
       `AFTER A GAME:`,
-      `- You return to the lobby automatically.`,
-      `- Challenge someone else or wait for a challenge!`,
+      `- You return to the 'connected' state — not back in the lobby automatically.`,
+      `- Ask the human: play another bot? Enter the lobby to find a human? Or step away?`,
       ``,
       `MOVES: Use standard algebraic notation:`,
       `- Pawn moves: e4, d5, exd5 (capture)`,
@@ -301,9 +320,9 @@ export class ChessGame implements GameModule {
   getRoleAssignments(players: PlayerInfo[]): Map<string, string> {
     const roles = new Map<string, string>()
     for (const p of players) {
-      const state = this.playerStates.get(p.token)
-      if (state?.status === 'playing') {
-        const instance = this.instances.get(state.gameInstanceId)
+      const gameInstanceId = this.inGameInstances.get(p.token)
+      if (gameInstanceId) {
+        const instance = this.instances.get(gameInstanceId)
         if (instance) {
           if (instance.whitePlayer.token === p.token) roles.set(p.token, 'white')
           else if (instance.blackPlayer.token === p.token) roles.set(p.token, 'black')
@@ -332,8 +351,7 @@ export class ChessGame implements GameModule {
   private handleChallenge(player: PlayerInfo, data: unknown): ActionResult {
     const { opponent: opponentName, color } = data as { opponent: string; color?: string }
 
-    const state = this.playerStates.get(player.token)
-    if (state?.status === 'playing') {
+    if (this.inGameInstances.has(player.token)) {
       return { ok: false, error: 'You are already in a game', events: [] }
     }
 
@@ -341,14 +359,13 @@ export class ChessGame implements GameModule {
       return { ok: false, error: 'Cannot challenge yourself', events: [] }
     }
 
-    // Find opponent by name
+    // Find opponent by name (only lobby players are in playersByToken).
     const opponent = this.findPlayerByName(opponentName)
     if (!opponent) {
       return { ok: false, error: `Player "${opponentName}" not found in the lobby`, events: [] }
     }
 
-    const opponentState = this.playerStates.get(opponent.token)
-    if (opponentState?.status === 'playing') {
+    if (this.inGameInstances.has(opponent.token)) {
       return { ok: false, error: `${opponent.name} is already in a game`, events: [] }
     }
 
@@ -418,11 +435,15 @@ export class ChessGame implements GameModule {
     }
     this.instances.set(instance.id, instance)
 
-    // Move both players to playing state
-    this.playerStates.set(challenge.challenger.token, { status: 'playing', gameInstanceId: instance.id })
-    this.playerStates.set(challenge.opponent.token, { status: 'playing', gameInstanceId: instance.id })
+    // Track which game both players are in (for our own routing/checks).
+    this.inGameInstances.set(challenge.challenger.token, instance.id)
+    this.inGameInstances.set(challenge.opponent.token, instance.id)
 
-    // Cancel any other pending challenges involving these players
+    // Remove from the lobby roster — they're in a game now, not the lobby.
+    this.playersByToken.delete(challenge.challenger.token)
+    this.playersByToken.delete(challenge.opponent.token)
+
+    // Cancel any other pending challenges involving these players.
     const cancelEvents = this.cancelChallengesForPlayer(challenge.challenger.token, instance.id)
       .concat(this.cancelChallengesForPlayer(challenge.opponent.token, instance.id))
 
@@ -441,9 +462,21 @@ export class ChessGame implements GameModule {
           },
         },
         // Mark both players as in-game so the liveness sweep leaves them alone
-        // for the duration of the match. See issue #8.
-        { type: 'session:state', data: {}, _sessionState: 'in-game', _sessionStateToken: whitePlayer.token },
-        { type: 'session:state', data: {}, _sessionState: 'in-game', _sessionStateToken: blackPlayer.token },
+        // and so reconnects know what game to drop the player back into.
+        {
+          type: 'session:state',
+          data: {},
+          _sessionState: 'in-game',
+          _sessionStateToken: whitePlayer.token,
+          _sessionStateGameInstanceId: instance.id,
+        },
+        {
+          type: 'session:state',
+          data: {},
+          _sessionState: 'in-game',
+          _sessionStateToken: blackPlayer.token,
+          _sessionStateGameInstanceId: instance.id,
+        },
         { type: 'lobby:update', data: this.getLobbyData() },
       ],
     }
@@ -475,8 +508,7 @@ export class ChessGame implements GameModule {
   }
 
   private handlePlayBot(player: PlayerInfo): ActionResult {
-    const state = this.playerStates.get(player.token)
-    if (state?.status === 'playing') {
+    if (this.inGameInstances.has(player.token)) {
       return { ok: false, error: 'You are already in a game', events: [] }
     }
 
@@ -500,11 +532,14 @@ export class ChessGame implements GameModule {
     }
     this.instances.set(instance.id, instance)
 
-    // Both human and bot get a 'playing' playerStates entry so make_move
-    // routes correctly via routeToGame. The bot stays out of the lobby
-    // because it is never registered in playersByToken (see getLobbyPlayerNames).
-    this.playerStates.set(player.token, { status: 'playing', gameInstanceId: instance.id })
-    this.playerStates.set(bot.token, { status: 'playing', gameInstanceId: instance.id })
+    // Track both human and bot for make_move routing. The human's session
+    // state is also updated via the session:state event below; the bot has
+    // no session at all so this map is its only routing reference.
+    this.inGameInstances.set(player.token, instance.id)
+    this.inGameInstances.set(bot.token, instance.id)
+
+    // Remove the human from the lobby roster (if they were in it).
+    this.playersByToken.delete(player.token)
 
     // Cancel any pending challenges involving the human.
     const cancelEvents = this.cancelChallengesForPlayer(player.token, instance.id)
@@ -524,9 +559,14 @@ export class ChessGame implements GameModule {
             isBotGame: true,
           },
         },
-        // Mark the human as in-game so the liveness sweep leaves them alone
-        // for the duration of the match. See issue #8. The bot has no session.
-        { type: 'session:state', data: {}, _sessionState: 'in-game', _sessionStateToken: player.token },
+        // Mark the human as in-game (the bot has no session).
+        {
+          type: 'session:state',
+          data: {},
+          _sessionState: 'in-game',
+          _sessionStateToken: player.token,
+          _sessionStateGameInstanceId: instance.id,
+        },
         { type: 'lobby:update', data: this.getLobbyData() },
       ],
     }
@@ -552,11 +592,13 @@ export class ChessGame implements GameModule {
     player: PlayerInfo,
     handler: (instance: ChessGameInstance) => ActionResult,
   ): ActionResult {
-    const state = this.playerStates.get(player.token)
-    if (!state || state.status !== 'playing') {
+    // Prefer the session's gameInstanceId (the source of truth for humans),
+    // fall back to our internal map (which is also where bot tokens live).
+    const gameInstanceId = player.gameInstanceId ?? this.inGameInstances.get(player.token)
+    if (!gameInstanceId) {
       return { ok: false, error: 'You are not in a game. Use challenge to start one.', events: [] }
     }
-    const instance = this.instances.get(state.gameInstanceId)
+    const instance = this.instances.get(gameInstanceId)
     if (!instance) {
       return { ok: false, error: 'Game not found', events: [] }
     }
@@ -663,7 +705,7 @@ export class ChessGame implements GameModule {
     winner?: string,
     loser?: string,
   ): GameEvent[] {
-    // Snapshot which side is the bot before we mutate botTokens below.
+    // Snapshot human tokens before we mutate the internal maps below.
     const humanTokens: string[] = []
     for (const side of [instance.whitePlayer, instance.blackPlayer]) {
       if (!this.botTokens.has(side.token)) {
@@ -671,15 +713,14 @@ export class ChessGame implements GameModule {
       }
     }
 
-    // Return human players to lobby; bot tokens are ephemeral (per game instance)
-    // and get fully cleaned up rather than left in the lobby state map.
+    // Clean up routing. Bot tokens are ephemeral (per game instance) and get
+    // fully removed. Humans get their in-game tracking removed; their session
+    // state transitions to 'connected' via the event below.
     for (const side of [instance.whitePlayer, instance.blackPlayer]) {
       if (this.botTokens.has(side.token)) {
         this.botTokens.delete(side.token)
-        this.playerStates.delete(side.token)
-      } else {
-        this.playerStates.set(side.token, { status: 'lobby' })
       }
+      this.inGameInstances.delete(side.token)
     }
     this.instances.delete(instance.id)
 
@@ -695,25 +736,38 @@ export class ChessGame implements GameModule {
       gameOverData.black = instance.blackPlayer.name
     }
 
-    // Put real players back in the lobby state so the liveness sweep can
-    // reap them again if they've been silent.
+    // Return humans to 'connected' (per docs/player-state.md — they opt back
+    // into the lobby explicitly via enter_lobby if they want to).
     const events: GameEvent[] = [{ type: 'game:over', data: gameOverData }]
     for (const token of humanTokens) {
       events.push({
         type: 'session:state',
         data: {},
-        _sessionState: 'lobby',
+        _sessionState: 'connected',
         _sessionStateToken: token,
       })
     }
+    // The lobby roster is unchanged by game-end (the humans were already out
+    // of it once they entered the game). But emit lobby:update anyway so
+    // viewers see activeGames update.
     events.push({ type: 'lobby:update', data: this.getLobbyData() })
     return events
   }
 
+  /**
+   * Search for a player by name across both the lobby roster (playersByToken)
+   * AND active game instances. Used by handleChallenge to give a useful
+   * "already in a game" error for in-game players rather than "not found".
+   */
   private findPlayerByName(name: string): PlayerInfo | null {
     const normalized = name.trim().toLowerCase()
     for (const player of this.playersByToken.values()) {
       if (player.name.toLowerCase() === normalized) return player
+    }
+    for (const instance of this.instances.values()) {
+      for (const side of [instance.whitePlayer, instance.blackPlayer]) {
+        if (side.name.toLowerCase() === normalized) return side
+      }
     }
     return null
   }
@@ -738,14 +792,10 @@ export class ChessGame implements GameModule {
   }
 
   private getLobbyPlayerNames(): string[] {
-    const names: string[] = []
-    for (const [token, state] of this.playerStates) {
-      if (state.status === 'lobby') {
-        const player = this.playersByToken.get(token)
-        if (player) names.push(player.name)
-      }
-    }
-    return names
+    // playersByToken IS the lobby roster: populated by onPlayerJoin
+    // (called from handleEnterLobby), cleared in onPlayerLeave and when
+    // players enter a game. See docs/player-state.md.
+    return [...this.playersByToken.values()].map(p => p.name)
   }
 
   private getActiveGameSummaries(): Array<Record<string, unknown>> {

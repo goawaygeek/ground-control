@@ -2,6 +2,14 @@ export interface PlayerInfo {
   name: string
   token: string
   role: string
+  /**
+   * Session-level state at the time of the action. Populated by the server
+   * for /action handlers; optional/undefined in other contexts (tests, the
+   * server-side bot which has no session).
+   */
+  state?: 'connected' | 'lobby' | 'in-game'
+  /** Game instance id when state === 'in-game'. */
+  gameInstanceId?: string
 }
 
 export interface GameEvent {
@@ -15,12 +23,19 @@ export interface GameEvent {
   _phaseTimerKey?: string
   /**
    * If set, GameRoom transitions the named session into this state when
-   * dispatching the event. Use 'in-game' to exempt the session from the
-   * liveness sweep; 'lobby' to put it back. Stripped before broadcast.
+   * dispatching the event. See docs/player-state.md for state semantics.
+   * Stripped before broadcast.
    */
-  _sessionState?: 'lobby' | 'in-game'
+  _sessionState?: 'connected' | 'lobby' | 'in-game'
   /** Token for the session whose state should be changed (see _sessionState). */
   _sessionStateToken?: string
+  /**
+   * Set together with _sessionState='in-game' to bind the session to a
+   * specific game instance. Used for reconnect-state-preservation: when a
+   * player rejoins, the session's gameInstanceId tells the game module which
+   * game they were in.
+   */
+  _sessionStateGameInstanceId?: string
 }
 
 export interface ActionResult {
@@ -42,7 +57,14 @@ export interface McpToolDef {
   inputSchema: Record<string, unknown>
 }
 
-export type LeaveReason = 'graceful' | 'disconnect' | 'reaped'
+/**
+ * Why a player left the game module's roster.
+ *  - 'graceful': explicit POST /<game>/leave
+ *  - 'disconnect': SSE dropped and grace period expired
+ *  - 'reaped': liveness sweep cleaned up a stale session
+ *  - 'left_lobby': stepped out of the lobby but stayed on the server (connected)
+ */
+export type LeaveReason = 'graceful' | 'disconnect' | 'reaped' | 'left_lobby'
 
 export interface GameModule {
   readonly gameId: string
