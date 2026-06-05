@@ -630,10 +630,17 @@ describe('ChessGame', () => {
       expect(instructions.toLowerCase()).toContain('challenge')
     })
 
-    it('mandates listing the legal moves on the human\'s turn', () => {
-      // The "normal" coaching output the user wants shows the legal moves.
-      // The degraded output skipped them. Make it required, not optional.
-      expect(game.getInstructions().toLowerCase()).toContain('legal moves')
+    it('tells the model to use the legal-move list to vet candidates, not to dump it', () => {
+      // The human does NOT want all ~30 legal moves pasted at them — that's
+      // noise. The model should use the legal-move list internally to ensure
+      // every candidate it offers is actually legal, and only present the
+      // vetted candidates.
+      const lower = game.getInstructions().toLowerCase()
+      expect(lower).toContain('legal')
+      // Must instruct NOT to show/list/dump the full set of legal moves.
+      expect(lower).toMatch(/do not (show|list|dump|paste|display).{0,40}legal moves|legal moves.{0,40}(do not|don't|never) (show|list|dump|paste|display)/)
+      // Candidates must be drawn from / checked against the legal moves.
+      expect(lower).toMatch(/legal move/)
     })
 
     it('mandates offering numbered candidate moves and a recommendation', () => {
