@@ -340,6 +340,35 @@ describe('ChessGame', () => {
       expect((boardEvent.data as any).gameInstanceId).toBe(gameInstanceId)
     })
 
+    // Same hallucination class as issue #15, but for get_board. The board is
+    // emitted as a _targetPlayer SSE event (board:state); the SYNCHRONOUS tool
+    // response only carries what's in responseData. Without it, the tool result
+    // the LLM sees is just {ok:true} and it fabricates a board (observed: an
+    // illegal position the engine could never produce). responseData must echo
+    // the real board/fen/turn/legalMoves so the LLM renders ground truth.
+    it('returns the board in responseData (so callers do not hallucinate)', () => {
+      const result = game.onAction(white, 'get_board', {})
+      expect(result.ok).toBe(true)
+      expect(result.responseData).toBeDefined()
+      const data = result.responseData!
+      expect(typeof data.board).toBe('string')
+      expect(typeof data.fen).toBe('string')
+      expect(data.turn).toBe('white') // fresh game, white to move
+      expect(Array.isArray(data.legalMoves)).toBe(true)
+      // The responseData board must match the event's board exactly.
+      const boardEvent = result.events.find(e => e.type === 'board:state')!
+      expect(data.board).toBe((boardEvent.data as any).board)
+      expect(data.fen).toBe((boardEvent.data as any).fen)
+    })
+
+    it('get_board responseData reflects the current position after a move', () => {
+      game.onAction(white, 'make_move', { move: 'e4' })
+      const result = game.onAction(black, 'get_board', {})
+      expect(result.responseData!.turn).toBe('black')
+      // e4 played: a pawn sits on e4, fen has black to move.
+      expect((result.responseData!.fen as string)).toContain(' b ')
+    })
+
     it('does not attach a phase timer to move events (chess clock removed for beta)', () => {
       const result = game.onAction(white, 'make_move', { move: 'e4' })
       const moveEvent = result.events.find(e => e.type === 'move:made')!
