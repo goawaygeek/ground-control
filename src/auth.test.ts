@@ -1,4 +1,4 @@
-import { describe, it, expect, beforeEach, afterEach } from 'vitest'
+import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest'
 import { SessionManager } from './auth.js'
 import { LocalJsonStore } from './store.js'
 import { mkdtempSync, rmSync } from 'node:fs'
@@ -232,6 +232,90 @@ describe('SessionManager', () => {
       }
       const toReap = sm.getSessionsToReap(100_000, 90_000)
       expect(toReap.map(s => s.name).sort()).toEqual(['a', 'b', 'c'])
+    })
+  })
+
+  describe('removeSseClient disconnect grace', () => {
+    beforeEach(() => {
+      vi.useFakeTimers()
+    })
+    afterEach(() => {
+      vi.useRealTimers()
+    })
+
+    it('fires onDisconnect after the grace period when a connected session loses its last SSE client', async () => {
+      const sm = new SessionManager()
+      const r = await sm.joinPlayer('alice')
+      if (!r.ok) throw new Error('join failed')
+      const session = sm.getSessionByToken(r.token)!
+      const fakeRes = {} as any
+      sm.addSseClient(session, fakeRes)
+
+      const onDisconnect = vi.fn()
+      sm.removeSseClient(session, fakeRes, onDisconnect)
+
+      expect(onDisconnect).not.toHaveBeenCalled()
+      vi.advanceTimersByTime(10_000)
+      expect(onDisconnect).toHaveBeenCalledTimes(1)
+    })
+
+    it('fires onDisconnect for a lobby session that loses its last SSE client', async () => {
+      const sm = new SessionManager()
+      const r = await sm.joinPlayer('alice')
+      if (!r.ok) throw new Error('join failed')
+      sm.setSessionState(r.token, 'lobby')
+      const session = sm.getSessionByToken(r.token)!
+      const fakeRes = {} as any
+      sm.addSseClient(session, fakeRes)
+
+      const onDisconnect = vi.fn()
+      sm.removeSseClient(session, fakeRes, onDisconnect)
+
+      vi.advanceTimersByTime(10_000)
+      expect(onDisconnect).toHaveBeenCalledTimes(1)
+    })
+
+    it('does NOT fire onDisconnect when an in-game session loses its last SSE client', async () => {
+      // This is the bot-reap-loop fix. An in-game session whose SSE drops
+      // (routine when the MCP client reconnects) must NOT be torn down. It
+      // survives until the client reconnects (reconnect-preserving-state) or
+      // the game's own turn clock ends it. See docs/player-state.md line 240.
+      const sm = new SessionManager()
+      const r = await sm.joinPlayer('alice')
+      if (!r.ok) throw new Error('join failed')
+      sm.setSessionState(r.token, 'in-game', 'game-abc')
+      const session = sm.getSessionByToken(r.token)!
+      const fakeRes = {} as any
+      sm.addSseClient(session, fakeRes)
+
+      const onDisconnect = vi.fn()
+      sm.removeSseClient(session, fakeRes, onDisconnect)
+
+      // Even well past the grace period, an in-game session is never disconnected.
+      vi.advanceTimersByTime(10 * 60_000)
+      expect(onDisconnect).not.toHaveBeenCalled()
+      // The session remains intact and bound to its game.
+      expect(sm.getSessionByToken(r.token)).not.toBeNull()
+      expect(sm.getSessionByToken(r.token)!.state).toBe('in-game')
+      expect(sm.getSessionByToken(r.token)!.gameInstanceId).toBe('game-abc')
+    })
+
+    it('does not arm a disconnect timer while other SSE clients remain', async () => {
+      const sm = new SessionManager()
+      const r = await sm.joinPlayer('alice')
+      if (!r.ok) throw new Error('join failed')
+      const session = sm.getSessionByToken(r.token)!
+      const resA = {} as any
+      const resB = {} as any
+      sm.addSseClient(session, resA)
+      sm.addSseClient(session, resB)
+
+      const onDisconnect = vi.fn()
+      sm.removeSseClient(session, resA, onDisconnect)
+
+      vi.advanceTimersByTime(10_000)
+      // resB is still connected, so no disconnect.
+      expect(onDisconnect).not.toHaveBeenCalled()
     })
   })
 

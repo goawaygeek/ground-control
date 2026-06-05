@@ -228,6 +228,26 @@ Unchanged from PR #9's implementation, just clearer in what it does:
 
 The 90s grace period for reconnect is *implicit* — it's just the existing sweep window. A player whose client dies has 90s to come back before they're forfeited. This was your call: we have de facto grace already; no new state needed.
 
+## Session teardown paths (all three)
+
+There are **three** ways a session can be cleaned up, and `in-game` is exempt from two of them. Anyone adding a fourth must decide how it treats `in-game` explicitly.
+
+| Path | Trigger | In-game treatment |
+|---|---|---|
+| Liveness sweep (`getSessionsToReap`) | `lastPingAt` older than 90s | **Exempt** — skipped entirely |
+| SSE disconnect timer (`removeSseClient`) | last SSE client drops, 10s grace expires | **Exempt** — returns early for `in-game` (PR #24) |
+| Graceful leave (`POST /<game>/leave`) | explicit user action | Forfeits the game, destroys the session |
+
+The disconnect-timer exemption is the *real* fix for the bot-reap loop. Before it, an MCP client's routine SSE reconnect would end the live game after 10s, drop the session to `connected`, and the sweep would then reap it — the `disconnect → reaped → reconnect` loop. An MCP client reconnects constantly; the platform must not treat a dropped SSE as "left the game."
+
+## The in-game ⟺ instance invariant
+
+**A session in `state === 'in-game'` must always point (via `gameInstanceId`) at a game instance that still exists.** The two are created together (game-start emits `session:state in-game` alongside the instance) and destroyed together (`endGame` deletes the instance and emits `session:state connected` in the same event batch). Nothing should ever leave one without the other.
+
+Because no automated cleanup currently ends an abandoned in-game session (chess has no turn clock — see #23), this invariant holds by construction today. But it is **fragile**: the planned #23 cleanup (a daily reap of stale game instances) **must emit the `connected` transition for the affected sessions when it destroys an instance**, or it will strand players in a broken `in-game`-pointing-at-nothing state.
+
+**Self-heal backstop:** in case the invariant is ever violated, `ChessGame.routeToGame` detects an in-game session whose instance is missing, resets the session to `connected` (via the `session:state` event channel — game modules hold no `SessionManager` reference by design), and returns a friendly "that game has ended, start a new one" error instead of a dead-end. This is insurance, not license to break the invariant.
+
 ## What this fixes
 
 - **Issue #20**: state lives in one place (`SessionManager`), not four. Game modules consult session state rather than maintaining parallel maps. `/stats` reports state accurately.

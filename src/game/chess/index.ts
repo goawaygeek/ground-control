@@ -261,7 +261,8 @@ export class ChessGame implements GameModule {
       `- Mention that the human can call play_bot again any time.`,
       ``,
       `DURING A GAME:`,
-      `- Use get_board to see the position and legal moves.`,
+      `- ALWAYS draw the board for the human. Render it on the very first turn, before and after every move, and any time you discuss the position. Never just list moves without showing the board — the human is looking at the board, not reading notation.`,
+      `- Call get_board to fetch the current position; it returns the board as ASCII plus the legal moves. Show that board in a code block to the human every time, then talk about it.`,
       `- Analyze the position: what are the threats? What are the opportunities?`,
       `- Suggest 2-3 candidate moves with brief explanations.`,
       `- Let the human pick — then call make_move with their choice.`,
@@ -284,7 +285,7 @@ export class ChessGame implements GameModule {
       `- Promotion: e8=Q`,
       ``,
       `DISPLAYING THE BOARD:`,
-      `- When you receive game:start, move:made, or game:over events, ALWAYS display the board to the user.`,
+      `- ALWAYS display the board to the user — on game:start, move:made, and game:over events, AND whenever you call get_board (e.g. when the human first opens the game or asks "what's the position?"). Showing the board is the default, not the exception.`,
       `- The board is formatted as ASCII art — show it in a code block so it renders clearly.`,
       `- After each move, briefly note what happened (e.g. "Alice played e4") and show the board.`,
       ``,
@@ -600,7 +601,28 @@ export class ChessGame implements GameModule {
     }
     const instance = this.instances.get(gameInstanceId)
     if (!instance) {
-      return { ok: false, error: 'Game not found', events: [] }
+      // Self-heal an orphaned in-game session: the session (or our routing map)
+      // claims the player is in a game, but the instance is gone. This can
+      // happen if a future cleanup (#23) destroys an instance without resetting
+      // the session, or after any other invariant break. Rather than strand the
+      // player with a dead-end error on every action, reset them to 'connected'
+      // (via the same session:state channel endGame uses) and clear our map so
+      // subsequent actions report a clean "not in a game". The chess module
+      // holds no SessionManager reference by design — see the inGameInstances
+      // doc comment — so the corrective transition rides the event channel.
+      this.inGameInstances.delete(player.token)
+      return {
+        ok: false,
+        error: 'That game has ended (it is no longer on the server). You are back to connected — start a new game with play_bot, or enter_lobby to find a human opponent.',
+        events: [
+          {
+            type: 'session:state',
+            data: {},
+            _sessionState: 'connected',
+            _sessionStateToken: player.token,
+          },
+        ],
+      }
     }
     return handler(instance)
   }

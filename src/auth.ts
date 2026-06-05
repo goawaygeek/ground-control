@@ -170,6 +170,16 @@ export class SessionManager {
   ): void {
     session.sseClients.delete(res)
 
+    // In-game sessions are exempt from disconnect teardown, exactly as they
+    // are exempt from the liveness sweep (getSessionsToReap). An MCP client
+    // routinely drops and re-establishes its SSE connection mid-game; tearing
+    // the game down on a 10s grace window was the real cause of the bot-reap
+    // loop (the game would end, the session fell to 'connected', and the
+    // sweep then reaped it). An in-game session survives a dropped SSE until
+    // the client reconnects (reconnect-preserving-state) or the game's own
+    // turn clock forfeits it. See docs/player-state.md (esp. line 240).
+    if (session.state === 'in-game') return
+
     // If no more SSE connections, start grace period
     if (session.sseClients.size === 0) {
       session.disconnectTimer = setTimeout(() => {

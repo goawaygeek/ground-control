@@ -274,6 +274,64 @@ describe('ChessGame', () => {
       expect(result.error).toContain('not in a game')
     })
 
+    describe('orphaned in-game session self-heal', () => {
+      // A session can claim state==='in-game' with a gameInstanceId whose
+      // instance no longer exists (e.g. a future #23 cleanup cron destroyed the
+      // instance, or some other invariant break). Without self-heal the player
+      // is stranded: every game action errors and there's no way back to
+      // 'connected' short of destroying the session. routeToGame must detect
+      // this and reset the session to 'connected' so the LLM can offer a fresh
+      // game. See docs/player-state.md.
+      it('resets the session to connected when the instance is gone', () => {
+        const ghost: PlayerInfo = {
+          name: 'ghost',
+          token: 'token-ghost',
+          role: 'white',
+          state: 'in-game',
+          gameInstanceId: 'instance-that-no-longer-exists',
+        }
+        const result = game.onAction(ghost, 'make_move', { move: 'e4' })
+        expect(result.ok).toBe(false)
+        // Emits a corrective session:state event to return the player to connected.
+        const stateEvents = result.events.filter(e => e.type === 'session:state')
+        expect(stateEvents).toHaveLength(1)
+        expect((stateEvents[0] as any)._sessionState).toBe('connected')
+        expect((stateEvents[0] as any)._sessionStateToken).toBe('token-ghost')
+      })
+
+      it('gives a friendly error telling the human the game has ended', () => {
+        const ghost: PlayerInfo = {
+          name: 'ghost',
+          token: 'token-ghost',
+          role: 'white',
+          state: 'in-game',
+          gameInstanceId: 'instance-that-no-longer-exists',
+        }
+        const result = game.onAction(ghost, 'get_board', {})
+        expect(result.ok).toBe(false)
+        expect(result.error?.toLowerCase()).toContain('no longer')
+      })
+
+      it('clears the internal inGameInstances entry too', () => {
+        // Simulate the map and session disagreeing: the map still points at a
+        // dead instance. Self-heal should clear it so subsequent actions report
+        // 'not in a game' cleanly rather than re-triggering the orphan path.
+        const ghost: PlayerInfo = {
+          name: 'ghost',
+          token: 'token-ghost',
+          role: 'white',
+          state: 'in-game',
+          gameInstanceId: 'instance-that-no-longer-exists',
+        }
+        game.onAction(ghost, 'make_move', { move: 'e4' })
+        // Now without the session's gameInstanceId hint (as a fresh connected
+        // session would arrive), the player is cleanly "not in a game".
+        const after = game.onAction(makePlayer('ghost', 'token-ghost'), 'make_move', { move: 'e4' })
+        expect(after.ok).toBe(false)
+        expect(after.error).toContain('not in a game')
+      })
+    })
+
     it('get_board returns board state targeted to requesting player', () => {
       const result = game.onAction(white, 'get_board', {})
       expect(result.ok).toBe(true)
