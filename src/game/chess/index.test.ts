@@ -629,6 +629,22 @@ describe('ChessGame', () => {
       expect(instructions.toLowerCase()).toContain('lobby')
       expect(instructions.toLowerCase()).toContain('challenge')
     })
+
+    it('mandates listing the legal moves on the human\'s turn', () => {
+      // The "normal" coaching output the user wants shows the legal moves.
+      // The degraded output skipped them. Make it required, not optional.
+      expect(game.getInstructions().toLowerCase()).toContain('legal moves')
+    })
+
+    it('mandates offering numbered candidate moves and a recommendation', () => {
+      const lower = game.getInstructions().toLowerCase()
+      // Must prescribe a numbered list of candidates...
+      expect(lower).toContain('numbered')
+      // ...and an explicit recommendation, every turn.
+      expect(lower).toContain('recommend')
+      // The format is required on every one of the human's turns, not optional.
+      expect(lower).toMatch(/every turn|each turn|on your turn|the human's turn/)
+    })
   })
 
   describe('getConfig / setConfig', () => {
