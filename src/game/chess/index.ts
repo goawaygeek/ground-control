@@ -695,23 +695,29 @@ export class ChessGame implements GameModule {
   }
 
   private handleGetBoard(instance: ChessGameInstance, player: PlayerInfo): ActionResult {
+    const boardData = {
+      gameInstanceId: instance.id,
+      board: instance.engine.ascii(),
+      fen: instance.engine.fen(),
+      turn: instance.engine.turn() === 'w' ? 'white' : 'black',
+      legalMoves: instance.engine.moves(),
+      isCheck: instance.engine.isCheck(),
+      white: instance.whitePlayer.name,
+      black: instance.blackPlayer.name,
+      moveNumber: instance.engine.moveNumber(),
+    }
     return {
       ok: true,
       events: [{
         type: 'board:state',
-        data: {
-          gameInstanceId: instance.id,
-          board: instance.engine.ascii(),
-          fen: instance.engine.fen(),
-          turn: instance.engine.turn() === 'w' ? 'white' : 'black',
-          legalMoves: instance.engine.moves(),
-          isCheck: instance.engine.isCheck(),
-          white: instance.whitePlayer.name,
-          black: instance.blackPlayer.name,
-          moveNumber: instance.engine.moveNumber(),
-        },
+        data: boardData,
         _targetPlayer: player.token,
       }],
+      // Echo the board in the SYNCHRONOUS tool response. Without this the tool
+      // returns only {ok:true} and the LLM fabricates a board (it has been
+      // observed rendering illegal positions). Same hallucination class as #15
+      // for make_move — get_board needs the same treatment.
+      responseData: boardData,
     }
   }
 
