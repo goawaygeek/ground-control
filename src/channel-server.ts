@@ -155,7 +155,7 @@ mcp.setRequestHandler(CallToolRequestSchema, async (req) => {
         const lines = [`Reconnected as "${client.getPlayerName()}"!`]
         if (state === 'in-game') {
           lines.push('')
-          lines.push('You are in an active game. Call get_board to see the current position before suggesting any moves.')
+          lines.push('You are in an active game. Call get_board now and draw the current board for the human (in a code block) before doing anything else — they want to see the position, not just notation.')
         } else if (state === 'lobby') {
           lines.push('You are in the lobby — other players can see and challenge you. Call get_lobby to see what is going on.')
         } else {
