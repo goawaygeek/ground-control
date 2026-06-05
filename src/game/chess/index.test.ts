@@ -629,6 +629,29 @@ describe('ChessGame', () => {
       expect(instructions.toLowerCase()).toContain('lobby')
       expect(instructions.toLowerCase()).toContain('challenge')
     })
+
+    it('tells the model to use the legal-move list to vet candidates, not to dump it', () => {
+      // The human does NOT want all ~30 legal moves pasted at them — that's
+      // noise. The model should use the legal-move list internally to ensure
+      // every candidate it offers is actually legal, and only present the
+      // vetted candidates.
+      const lower = game.getInstructions().toLowerCase()
+      expect(lower).toContain('legal')
+      // Must instruct NOT to show/list/dump the full set of legal moves.
+      expect(lower).toMatch(/do not (show|list|dump|paste|display).{0,40}legal moves|legal moves.{0,40}(do not|don't|never) (show|list|dump|paste|display)/)
+      // Candidates must be drawn from / checked against the legal moves.
+      expect(lower).toMatch(/legal move/)
+    })
+
+    it('mandates offering numbered candidate moves and a recommendation', () => {
+      const lower = game.getInstructions().toLowerCase()
+      // Must prescribe a numbered list of candidates...
+      expect(lower).toContain('numbered')
+      // ...and an explicit recommendation, every turn.
+      expect(lower).toContain('recommend')
+      // The format is required on every one of the human's turns, not optional.
+      expect(lower).toMatch(/every turn|each turn|on your turn|the human's turn/)
+    })
   })
 
   describe('getConfig / setConfig', () => {
