@@ -6,6 +6,7 @@ import { resolveConfig } from './config.js'
 import { ChannelClient } from './channel-client.js'
 import { createGame } from './game/index.js'
 import { formatEventContent } from './format-event.js'
+import { buildOnboardingPreamble } from './onboarding.js'
 
 // Load .env file if present (no dependency needed)
 try {
@@ -106,22 +107,10 @@ const universalTools = [
   },
 ]
 
-const onboardingPreamble = persistentToken
-  ? [
-      `You have a saved player token in your environment. Immediately call set_name with an empty name (pass empty string: "") to reconnect.`,
-      `Do NOT ask the user for a name. Do NOT ask for confirmation. Just call the tool right now.`,
-      `The server will automatically restore your saved session. If the token is stale, it will tell you to pick a new name.`,
-      ``,
-      `Once registered, game events arrive as <channel source="${game.gameId}" type="..."> tags.`,
-      ``,
-    ].join('\n')
-  : [
-      `FIRST: You are NOT yet registered. Ask the user what name they'd like to play as,`,
-      `then call set_name with their answer. If it fails (e.g. name taken), ask them to pick a different name.`,
-      ``,
-      `Once registered, game events arrive as <channel source="${game.gameId}" type="..."> tags.`,
-      ``,
-    ].join('\n')
+const onboardingPreamble = buildOnboardingPreamble({
+  gameId: game.gameId,
+  hasToken: !!persistentToken,
+})
 
 const mcp = new Server(
   { name: game.gameId, version: '0.4.0' },
