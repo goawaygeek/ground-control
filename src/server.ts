@@ -6,6 +6,7 @@ import { fileURLToPath } from 'node:url'
 import { createGame, getAvailableGames } from './game/index.js'
 import { GameRoom } from './game-room.js'
 import { NotionPlayerStore, LocalJsonStore } from './store.js'
+import { CachedPlayerStore } from './cached-store.js'
 import { LocalJsonlEventStore, NotionEventStore, type EventStore } from './event-store.js'
 import { Analytics } from './analytics.js'
 import { ChessBotRunner } from './game/chess/bot-runner.js'
@@ -16,8 +17,14 @@ const PORT = parseInt(process.env.PORT ?? '8087', 10)
 // --- Shared player store (persistent identity across all games) ---
 let playerStore
 if (process.env.NOTION_TOKEN && process.env.NOTION_DATABASE_ID) {
-  playerStore = new NotionPlayerStore(process.env.NOTION_DATABASE_ID, process.env.NOTION_TOKEN)
-  console.log('Using Notion for player persistence')
+  // Wrap Notion in a cache + retry layer. Player records are immutable, so
+  // caching token/name lookups is safe and keeps the common reconnect path off
+  // Notion entirely — critical under a traffic spike where Notion's rate limit
+  // would otherwise fail joins. See cached-store.ts.
+  playerStore = new CachedPlayerStore(
+    new NotionPlayerStore(process.env.NOTION_DATABASE_ID, process.env.NOTION_TOKEN),
+  )
+  console.log('Using Notion for player persistence (cached + retrying)')
 } else {
   const storePath = join(__dirname, '..', 'data', 'players.json')
   playerStore = new LocalJsonStore(storePath)
