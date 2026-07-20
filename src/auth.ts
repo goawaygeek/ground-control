@@ -1,6 +1,7 @@
 import { IncomingMessage, ServerResponse } from 'node:http'
 import { randomUUID } from 'node:crypto'
 import type { PlayerStore } from './store.js'
+import { sanitizeName } from './sanitize.js'
 
 export type SessionState = 'connected' | 'lobby' | 'in-game'
 
@@ -36,7 +37,10 @@ export class SessionManager {
   constructor(private store?: PlayerStore) {}
 
   async joinPlayer(rawName: string): Promise<JoinResult> {
-    const name = rawName.trim().toLowerCase()
+    // Sanitize BEFORE anything else: strip control chars and cap length so a
+    // name can never carry a prompt-injection payload into other players'
+    // sessions (names are shown inline, unwrapped, everywhere). See sanitize.ts.
+    const name = sanitizeName(rawName).trim().toLowerCase()
     if (!name) return { ok: false, error: 'Name cannot be empty' }
 
     // If a store is configured, check if name is already registered there

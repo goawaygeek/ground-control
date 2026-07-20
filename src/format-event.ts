@@ -4,6 +4,8 @@
  * the board instead of showing raw JSON.
  */
 
+import { wrapUntrusted } from './sanitize.js'
+
 const BOARD_EVENTS = new Set(['game:start', 'move:made', 'game:over', 'board:state'])
 const CHALLENGE_EVENTS = new Set(['challenge:received', 'challenge:accepted', 'challenge:declined', 'challenge:cancelled'])
 const COMEDY_EVENTS = new Set(['round:start', 'phase:reveal', 'phase:voting', 'vote:update', 'round:result', 'round:cancelled'])
@@ -96,7 +98,12 @@ function formatGameOver(data: Record<string, unknown>): string {
 }
 
 function formatPlayerMessage(data: Record<string, unknown>): string {
-  return `${data.from}: ${data.message}`
+  // The message body is untrusted player text reaching another player's agent —
+  // fence it so it can't act as a prompt injection. See sanitize.ts.
+  return wrapUntrusted(String(data.message ?? ''), {
+    author: String(data.from ?? 'unknown'),
+    kind: 'message',
+  })
 }
 
 function formatChallengeEvent(type: string, data: Record<string, unknown>): string {
@@ -199,8 +206,8 @@ function formatPhaseReveal(data: Record<string, unknown>): string {
   const jokes = (data.jokes as Joke[] | undefined) ?? []
   const lines = [`Reveal — theme: "${data.theme}"`, '']
   for (const j of jokes) {
-    lines.push(`Joke ${j.number} (${j.player}):`)
-    lines.push(`  ${j.joke}`)
+    lines.push(`Joke ${j.number}:`)
+    lines.push(wrapUntrusted(String(j.joke ?? ''), { author: String(j.player ?? 'unknown'), kind: 'joke' }))
     lines.push('')
   }
   return lines.join('\n').trimEnd()
@@ -214,8 +221,8 @@ function formatPhaseVoting(data: Record<string, unknown>): string {
     '',
   ]
   for (const j of jokes) {
-    lines.push(`Joke ${j.number} (${j.player}):`)
-    lines.push(`  ${j.joke}`)
+    lines.push(`Joke ${j.number}:`)
+    lines.push(wrapUntrusted(String(j.joke ?? ''), { author: String(j.player ?? 'unknown'), kind: 'joke' }))
     lines.push('')
   }
   lines.push('Use the vote tool with jokeNumber 1 or 2.')
@@ -232,11 +239,11 @@ function formatRoundResult(data: Record<string, unknown>): string {
   const lines = [
     `Round ${data.roundNumber} result: ${data.winner} wins!`,
     '',
-    `Winning joke (${data.winner}):`,
-    `  ${data.winnerJoke}`,
+    `Winning joke:`,
+    wrapUntrusted(String(data.winnerJoke ?? ''), { author: String(data.winner ?? 'unknown'), kind: 'joke' }),
     '',
-    `Losing joke (${data.loser}):`,
-    `  ${data.loserJoke}`,
+    `Losing joke:`,
+    wrapUntrusted(String(data.loserJoke ?? ''), { author: String(data.loser ?? 'unknown'), kind: 'joke' }),
     '',
     `Votes — ${data.winner}: ${votes[data.winner as string] ?? 0}, ${data.loser}: ${votes[data.loser as string] ?? 0}`,
   ]
